@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<sdf version="1.4">
+
+  <model name="race_track">
+    <pose>0 0 5 0 0 -0.000614</pose>
+    <static>true</static>
+
+    <link name="ground">
+      <collision name="ground_collision">
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>55.08 36.02232</size>
+          </plane>
+        </geometry>
+      </collision>
+      
+      <visual name="ground_visual">
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>55.08 36.02232</size>
+          </plane>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>model://race_track/materials/textures/track.png</albedo_map>
+              <roughness>1.0</roughness>
+              <metalness>0.0</metalness>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+      
+    </link>
+  </model>
+
+</sdf>

@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+title: "GuardedLC and LC-Utt v1.0"
+message: "If you use this software or benchmark, please cite it as below."
+type: software
+authors:
+- family-names: "Lee"
+  given-names: "Sunhong"
+  affiliation: Sungkyunkwan University
+repository-code: "https://github.com/sunhong7867/lc-utt"
+license: MIT
+version: 1.0.0

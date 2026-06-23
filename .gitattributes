@@ -1,0 +1,14 @@
+* text=auto
+
+# Keep ROS, Gazebo, and Python project files normalized across machines.
+*.py text eol=lf
+*.launch.py text eol=lf
+*.xml text eol=lf
+*.sdf text eol=lf
+*.world text eol=lf
+*.rviz text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.md text eol=lf

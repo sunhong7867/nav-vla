@@ -1,0 +1,1846 @@
+<?xml version='1.0'?>
+<sdf version='1.7'>
+
+  <model name='prius_hybrid'>
+
+    <!--  -->
+
+    <!-- base_link -->
+
+    <link name='chassis'>
+      <inertial>
+        <mass>1326</mass>
+        <pose>0 -0.266 0.48 0 -0 0</pose>
+        <inertia>
+          <ixx>2581.13</ixx>
+          <ixy>0</ixy>
+          <iyy>591.308</iyy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+          <izz>2681.95</izz>
+        </inertia>
+      </inertial>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+      <pose>0 0 0 0 -0 0</pose>
+
+      <visual name='interior_visual'>
+        <geometry>
+          <mesh>
+            <uri>model://prius_hybrid/meshes/hybrid_body.obj</uri>
+            <scale>0.01 0.01 0.01</scale>
+            <!--<scale>0.02 0.02 0.02</scale>-->
+            <submesh>
+              <name>Hybrid_Interior</name>
+              <center>0</center>
+            </submesh>
+          </mesh>
+        </geometry>
+        <pose>0 0 0 0 -0 0</pose>
+        <transparency>0</transparency>
+        <cast_shadows>1</cast_shadows>
+      </visual>
+
+      <visual name='chassis_visual'>
+        <geometry>
+          <mesh>
+            <uri>model://prius_hybrid/meshes/hybrid_body.obj</uri>
+            <!-- hybrid_body.obj" scale="0.01 0.01 0.01"/> -->
+            <scale>0.01 0.01 0.01</scale>
+            <!--<scale>0.02 0.02 0.02</scale>-->
+            <submesh>
+              <name>Hybrid</name>
+              <center>0</center>
+            </submesh>
+          </mesh>
+        </geometry>
+        <pose>0 0 0 0 -0 0</pose>
+        <transparency>0</transparency>
+        <cast_shadows>1</cast_shadows>
+      </visual>
+
+      <collision name='chassis'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 0.05 0.625 0 -0 0</pose>
+        <geometry>
+          <box>
+            <size>1.7526 2.1 0.95</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+
+      <collision name='front_bumper'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 -2 0.458488 0 -0 0</pose>
+        <geometry>
+          <box>
+            <size>1.33728 0.48 0.566691</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+
+      <collision name='hood'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 -1.90084 0.676305 0.341247 -0 0</pose>
+        <geometry>
+          <box>
+            <size>1.59797 0.493107 0.265468</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+
+      <collision name='windshield'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 -0.875105 1.03227 0.335476 -0 0</pose>
+        <geometry>
+          <box>
+            <size>1.16838 1.65425 0.272347</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+
+      <collision name='top_front'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 0.161236 1.38604 0.13503 -0 0</pose>
+        <geometry>
+          <box>
+            <size>1.27915 0.625988 0.171868</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+
+      <collision name='top_rear'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 0.817696 1.36007 -0.068997 0 0</pose>
+        <geometry>
+          <box>
+            <size>1.28513 0.771189 0.226557</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+
+      <visual name='windows_visual'>
+        <geometry>
+          <mesh>
+            <uri>model://prius_hybrid/meshes/hybrid_body.obj</uri>
+            <scale>0.01 0.01 0.01</scale>
+            <!--<scale>0.02 0.02 0.02</scale>-->
+            <submesh>
+              <name>Hybrid_Windows</name>
+              <center>0</center>
+            </submesh>
+          </mesh>
+        </geometry>
+        <pose>0 0 0 0 -0 0</pose>
+        <transparency>0</transparency>
+        <cast_shadows>1</cast_shadows>
+      </visual>
+
+      <collision name='rear_window'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 1.64053 1.17513 -0.262017 0 0</pose>
+        <geometry>
+          <box>
+            <size>1.26785 1.11634 0.244286</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>    
+
+      <collision name='trunk'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 1.63706 0.88818 0 -0 0</pose>
+        <geometry>
+          <box>
+            <size>1.78806 1.13899 0.482746</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+  
+      <collision name='back_bumper'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 2.05445 0.57787 0 -0 0</pose>
+        <geometry>
+          <box>
+            <size>1.78165 0.512093 0.581427</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>      
+
+      <sensor type="contact" name="chassis_contact">
+        <update_rate>20</update_rate>
+        <contact>
+          <collision>chassis</collision>
+        </contact>
+      </sensor>
+
+    </link>
+
+    <!--  -->
+
+    <link name='front_left_wheel'>
+      <pose>0.759998 -1.41 0.3 0 -0 0</pose>
+      <inertial>
+        <mass>11</mass>
+        <inertia>
+          <ixx>0.586312</ixx>
+          <ixy>0</ixy>
+          <iyy>0.335529</iyy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+          <izz>0.335529</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>     
+
+      <visual name='visual'>
+        <pose>0.04 0 0 0 -0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://prius_hybrid/meshes/wheel.obj</uri> 
+            <scale>0.01 0.01 0.01</scale>
+          </mesh>
+        </geometry>
+      </visual>
+
+      <collision name='collision'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 0 0 3.14159 1.57079 3.14159</pose>
+        <geometry>
+          <sphere>
+            <radius>0.31265</radius>
+          </sphere>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>0.9</mu>
+              <mu2>0.9</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+09</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0.001</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+09</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+
+      <sensor type="contact" name="fl_contact">
+        <update_rate>30</update_rate>
+        <contact>
+          <collision>collision</collision>
+        </contact>
+      </sensor>
+
+    </link>
+
+    <link name='front_right_wheel'>
+      <pose>-0.760002 -1.41 0.3 0 -0 0</pose>
+      <inertial>
+        <mass>11</mass>
+        <inertia>
+          <ixx>0.586312</ixx>
+          <ixy>0</ixy>
+          <iyy>0.335529</iyy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+          <izz>0.335529</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+
+      <visual name='visual'>
+        <pose>-0.04 0 0 0 -0 0</pose>
+        <pose>0 0 0 0 -0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://prius_hybrid/meshes/wheel.obj</uri> 
+            <scale>0.01 0.01 0.01</scale>
+          </mesh>
+        </geometry>
+        <transparency>0</transparency>
+        <cast_shadows>1</cast_shadows>
+      </visual>
+
+      <collision name='collision'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 0 0 3.14159 1.57079 3.14159</pose>
+        <geometry>
+          <sphere>
+            <radius>0.31265</radius>
+          </sphere>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>0.9</mu>
+              <mu2>0.9</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+09</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0.001</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+09</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+
+      <sensor type="contact" name="fr_contact">
+        <update_rate>30</update_rate>
+        <contact>
+          <collision>collision</collision>
+        </contact>
+      </sensor>
+
+    </link>
+
+    <link name='rear_left_wheel'>
+      <pose>0.785999 1.45 0.3 0 -0 0</pose>
+      <inertial>
+        <mass>11</mass>
+        <inertia>
+          <ixx>0.586312</ixx>
+          <ixy>0</ixy>
+          <iyy>0.335529</iyy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+          <izz>0.335529</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>      
+
+      <visual name='visual'>
+        <pose>0.04 0 0 0 -0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://prius_hybrid/meshes/wheel.obj</uri> 
+            <scale>0.01 0.01 0.01</scale>
+          </mesh>
+        </geometry>
+        <transparency>0</transparency>
+        <cast_shadows>1</cast_shadows>
+      </visual>
+
+      <collision name='collision'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 0 0 3.14159 1.57079 3.14159</pose>
+        <geometry>
+          <sphere>
+            <radius>0.31265</radius>
+          </sphere>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.1</mu>
+              <mu2>1.1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+09</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0.001</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+09</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+    </link>
+
+    <link name='rear_right_wheel'>
+      <pose>-0.785995 1.45 0.3 0 -0 0</pose>
+      <inertial>
+        <mass>11</mass>
+        <inertia>
+          <ixx>0.586312</ixx>
+          <ixy>0</ixy>
+          <iyy>0.335529</iyy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+          <izz>0.335529</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+
+      <visual name='visual'>
+        <pose>-0.04 0 0 0 -0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://prius_hybrid/meshes/wheel.obj</uri> 
+            <scale>0.01 0.01 0.01</scale>
+          </mesh>
+        </geometry>
+        <transparency>0</transparency>
+        <cast_shadows>1</cast_shadows>
+      </visual>
+
+      <collision name='collision'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 0 0 3.14159 1.57079 3.14159</pose>
+        <geometry>
+          <sphere>
+            <radius>0.31265</radius>
+          </sphere>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.1</mu>
+              <mu2>1.1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+09</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0.001</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+09</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+    </link>
+
+    <!--  -->
+
+    <link name='steering_wheel'>
+      <pose>0.357735 -0.627868 0.988243 -1.3021 0 0</pose>
+      <inertial>
+        <mass>1</mass>
+        <inertia>
+          <ixx>0.145833</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.145833</iyy>
+          <iyz>0</iyz>
+          <izz>0.125</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+
+      <visual name='visual'>
+        <pose>0 0 0 1.3021 -0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://prius_hybrid/meshes/steering_wheel.obj</uri> 
+            <scale>0.01 0.01 0.01</scale>
+          </mesh>
+        </geometry>
+        <transparency>0</transparency>
+        <cast_shadows>1</cast_shadows>
+      </visual>
+      
+      <collision name='collision'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 0 0 0 -0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.178172</radius>
+            <length>0.041845</length>
+          </cylinder>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0.003</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+    </link>
+
+    <joint name='steering_joint' type='revolute'>
+      <parent>chassis</parent>
+      <child>steering_wheel</child>
+      <pose>-0.002 0 0 0 -0 0</pose>
+      <axis>
+        <xyz>0 -8.4e-05 0.999999</xyz>
+        <limit>
+          <lower>-7.85</lower>
+          <upper>7.85</upper>
+          <effort>1000000</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <spring_reference>0</spring_reference>
+          <spring_stiffness>0</spring_stiffness>
+          <damping>1</damping>
+          <friction>0</friction>
+        </dynamics>
+      </axis>
+      <physics>
+        <ode>
+          <limit>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </limit>
+          <suspension>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </suspension>
+        </ode>
+      </physics>
+    </joint>
+    <static>0</static>
+    <allow_auto_disable>1</allow_auto_disable>
+
+    <!-- fl_axle -->
+    <!-- fr_axle -->
+
+    <!-- front_left_wheel_joint -->
+    <joint name='front_left_combined_joint' type='universal'>
+      <parent>chassis</parent>
+      <child>front_left_wheel</child>  <!-- fl_axle -->
+      <pose>0 0 0 -0.087266 0 0</pose>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <!-- +- 50 degrees -->
+          <lower>-0.8727</lower> <!-- -0.5 후진 시 바퀴 회전 제한 -->
+          <upper>0.8727</upper>
+          <effort>1000000</effort> <!-- 100 회전 힘 제한 -->
+          <velocity>-1</velocity> <!-- 1 회전 속도 제한 -->
+        </limit>
+        <dynamics>
+          <spring_reference>0</spring_reference>
+          <spring_stiffness>0</spring_stiffness>
+          <damping>0</damping> <!-- 0.7 후진 시 더 높은 댐핑 -->
+          <friction>0</friction> <!-- 15.0 후진 시 더 높은 마찰 -->
+        </dynamics>
+      </axis>
+      <axis2>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-1e+16</lower>
+          <upper>1e+16</upper>
+          <effort>1000000</effort> <!-- 100 회전 힘 제한 -->
+          <velocity>-1</velocity> <!-- 1 회전 속도 제한 -->
+        </limit>
+        <dynamics>
+          <spring_reference>0</spring_reference>
+          <spring_stiffness>0</spring_stiffness>
+          <damping>0</damping> <!-- 0.7 후진 시 더 높은 댐핑 -->
+          <friction>18.0474</friction>
+        </dynamics>
+      </axis2>
+      <physics>
+        <ode>
+          <limit>
+            <cfm>0</cfm>
+            <erp>0.2</erp> <!-- 0.9 후진 시 반응 조정 -->
+          </limit>
+          <suspension>
+            <cfm>0</cfm>  <!-- 0.02 서스펜션에 대한 물리적 반응 -->
+            <erp>0.2</erp>  <!-- 0.9 서스펜션 반응을 후진에 맞게 조정 -->
+          </suspension>
+        </ode>
+      </physics>
+    </joint>
+
+    <joint name='front_right_combined_joint' type='universal'> 
+      <parent>chassis</parent>
+      <child>front_right_wheel</child>  <!-- fr_axle -->
+      <pose>0 0 0 -0.087266 0 0</pose>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <!-- <xyz>1 0 0</xyz> -->
+        <limit>
+          <!-- +- 50 degrees -->
+          <lower>-0.8727</lower>
+          <upper>0.8727</upper>
+          <effort>1000000</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <spring_reference>0</spring_reference>
+          <spring_stiffness>0</spring_stiffness>
+          <damping>0</damping>
+          <friction>0</friction>
+        </dynamics>
+      </axis>
+      <axis2>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-1e+16</lower>
+          <upper>1e+16</upper>
+          <effort>1000000</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <spring_reference>0</spring_reference>
+          <spring_stiffness>0</spring_stiffness>
+          <damping>0</damping>
+          <friction>18.0474</friction>
+        </dynamics>
+      </axis2>
+      <physics>
+        <ode>
+          <limit>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </limit>
+          <suspension>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </suspension>
+        </ode>
+      </physics>
+    </joint>
+
+    <!--  -->
+
+    <link name='rear_axle'>
+      <pose>-4e-06 1.45 0.3 0 -0 0</pose>
+      <inertial>
+        <mass>30</mass>
+        <inertia>
+          <ixx>0.084375</ixx>
+          <ixy>0</ixy>
+          <iyy>4.64581</iyy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+          <izz>4.64581</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+      </inertial>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>      
+
+      <visual name='visual'>
+        <pose>0 0 0 3.14159 1.57079 3.14159</pose>
+        <geometry>
+          <cylinder>
+            <length>1.357</length>
+            <radius>0.075</radius>
+          </cylinder>
+        </geometry>
+        <material>
+          <script>
+            <name>Gazebo/Grey</name>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+          </script>
+          <shader type='pixel'/>
+        </material>
+        <transparency>0</transparency>
+        <cast_shadows>1</cast_shadows>
+      </visual>
+    </link>
+
+    <joint name='rear_axle_joint' type='revolute'> 
+      <parent>chassis</parent>
+      <child>rear_axle</child>
+      <pose>0 0 0 0 -0 0</pose>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>-0.0508906</lower>
+          <upper>0.0508906</upper>
+          <effort>1000000</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <spring_reference>0</spring_reference>
+          <spring_stiffness>0</spring_stiffness>
+          <damping>2000</damping>
+          <friction>0</friction>
+        </dynamics>
+      </axis>
+      <physics>
+        <ode>
+          <limit>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </limit>
+          <suspension>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </suspension>
+        </ode>
+      </physics>
+    </joint>
+
+    <joint name='rear_left_wheel_joint' type='revolute'> 
+      <parent>rear_axle</parent> 
+      <child>rear_left_wheel</child>
+      <pose>0 0 0 0 -0 0</pose>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-1e+16</lower>
+          <upper>1e+16</upper>
+          <effort>1000000</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <spring_reference>0</spring_reference>
+          <spring_stiffness>0</spring_stiffness>
+          <damping>0</damping>
+          <friction>12.0316</friction>
+        </dynamics>
+      </axis>
+      <physics>
+        <ode>
+          <limit>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </limit>
+          <suspension>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </suspension>
+        </ode>
+      </physics>
+    </joint>
+
+    <joint name='rear_right_wheel_joint' type='revolute'>
+      <parent>rear_axle</parent>
+      <child>rear_right_wheel</child>
+      <pose>0 0 0 0 -0 0</pose>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-1e+16</lower>
+          <upper>1e+16</upper>
+          <effort>1000000</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <spring_reference>0</spring_reference>
+          <spring_stiffness>0</spring_stiffness>
+          <damping>0</damping>
+          <friction>12.0316</friction>
+        </dynamics>
+      </axis>
+      <physics>
+        <ode>
+          <limit>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </limit>
+          <suspension>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </suspension>
+        </ode>
+      </physics>
+    </joint>
+
+    <!--  -->
+
+    <link name='camera_frame'>
+      <inertial>
+        <inertia>
+          <ixx>0.01</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.01</iyy>
+          <iyz>0</iyz>
+          <izz>0.01</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+        <mass>1</mass>
+      </inertial>
+      <pose>-0.00031 0.318688 2.04993 0 0.1 -1.57</pose>
+      <sensor name='camera' type='camera'>
+        <always_on>1</always_on>
+        <visualize>0</visualize>
+        <update_rate>30</update_rate>
+        <topic>camera</topic>
+        <camera name='prius_cam'>
+          <horizontal_fov>1.0856</horizontal_fov> <!-- fov -->
+          <image>
+            <width>640</width> <!-- TODO 1280 720 --> 
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.03</near>
+            <far>100</far>
+          </clip>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>0.007</stddev>
+          </noise>
+        </camera>
+
+      </sensor>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+      <gravity>1</gravity>
+
+      <visual name='visual'>
+        <geometry>
+          <box>
+            <size>0.1 0.5 0.1</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0 0 0 1</ambient>
+          <diffuse>0 0 0 1</diffuse>
+          <specular>0 0 0 1</specular>
+          <emissive>0 0 0 1</emissive>
+        </material>
+        <pose>0 0 0 0 -0 0</pose>
+        <transparency>0</transparency>
+        <cast_shadows>1</cast_shadows>
+      </visual>
+
+      <collision name='collision'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 0 0 0 -0 0</pose>
+        <geometry>
+          <box>
+            <size>0.1 0.1 0.1</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+    </link>
+
+    <joint name='camera_joint' type='fixed'>
+      <parent>chassis</parent>
+      <child>camera_frame</child>
+      <pose>0 0 0 0 -0 0</pose>
+      <physics>
+        <ode>
+          <limit>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </limit>
+          <suspension>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </suspension>
+        </ode>
+      </physics>
+    </joint>
+
+    <link name='top_camera_frame'>
+      <inertial>
+        <inertia>
+          <ixx>0.01</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.01</iyy>
+          <iyz>0</iyz>
+          <izz>0.01</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+        <mass>1</mass>
+      </inertial>
+      <pose>-0.2 0.3 6.4 0 1.5708 -1.5708</pose>
+      <sensor name='ego_top_camera' type='camera'>
+        <always_on>1</always_on>
+        <visualize>0</visualize>
+        <update_rate>10</update_rate>
+        <topic>ego_top_camera</topic>
+        <camera name='top_prius_cam'>
+          <horizontal_fov>1.48</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.03</near>
+            <far>30</far>
+          </clip>
+        </camera>
+      </sensor>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+      <gravity>0</gravity>
+    </link>
+
+    <joint name='top_camera_joint' type='fixed'>
+      <parent>chassis</parent>
+      <child>top_camera_frame</child>
+      <pose>0 0 0 0 -0 0</pose>
+      <physics>
+        <ode>
+          <limit>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </limit>
+          <suspension>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </suspension>
+        </ode>
+      </physics>
+    </joint>
+
+    <link name='rear_camera_frame'>
+      <inertial>
+        <inertia>
+          <ixx>0.01</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.01</iyy>
+          <iyz>0</iyz>
+          <izz>0.01</izz>
+        </inertia>
+        <pose>0 0 0 0 -0 0</pose>
+        <mass>1</mass>
+      </inertial>
+      <pose>-0.000331 0.570777 1.96618 6e-06 0.304758 1.57112</pose>
+      <sensor name='rear_camera' type='camera'>
+        <always_on>0</always_on>
+        <visualize>0</visualize>
+        <update_rate>5</update_rate>
+        <topic>rear_camera</topic>
+        <camera name='rear_prius_cam'>
+          <horizontal_fov>1.0856</horizontal_fov>
+          <image>
+            <width>640</width> <!-- TODO 1280 720 --> 
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.03</near>
+            <far>100</far>
+          </clip>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>0.007</stddev>
+          </noise>
+        </camera>
+      </sensor>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+      <gravity>1</gravity>
+      <visual name='visual'>
+        <geometry>
+          <box>
+            <size>0.1 0.5 0.1</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0 0 0 1</ambient>
+          <diffuse>0 0 0 1</diffuse>
+          <specular>0 0 0 1</specular>
+          <emissive>0 0 0 1</emissive>
+        </material>
+        <pose>0 0 0 0 -0 0</pose>
+        <transparency>0</transparency>
+        <cast_shadows>1</cast_shadows>
+      </visual>
+      <collision name='collision'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 0 0 0 -0 0</pose>
+        <geometry>
+          <box>
+            <size>0.1 0.1 0.1</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+    </link>
+
+    <joint name='rear_camera_joint' type='fixed'>
+      <parent>chassis</parent>
+      <child>rear_camera_frame</child>
+      <pose>0 0 0 0 -0 0</pose>
+      <physics>
+        <ode>
+          <limit>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </limit>
+          <suspension>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </suspension>
+        </ode>
+      </physics>
+    </joint>
+
+    <!--  -->
+
+    <link name='lidar_link'>
+      <inertial>
+        <pose>0 -1.9 1 0 -0 0</pose>
+        <inertia>
+          <ixx>0.001</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.001</iyy>
+          <iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+        <mass>0.114</mass>
+      </inertial>
+
+      <sensor name='lidar' type='gpu_lidar'>
+        <!-- 라이다 시각화 빔 조절 -->
+        <pose>0 0 0.0 0 0 0</pose> 
+        <always_on>true</always_on>
+        <visualize>false</visualize>
+        <update_rate>5</update_rate>
+        <topic>scan</topic>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>360</samples>
+              <resolution>1</resolution>
+              <min_angle>0</min_angle>
+              <max_angle>6.28</max_angle>
+              <!-- 라이다 각도값을 늘림-->
+            </horizontal>
+            <vertical>
+              <samples>1</samples>
+              <min_angle>0</min_angle>
+              <max_angle>0</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.12</min>
+            <!-- 라이다 거리값을 늘림-->
+            <max>12.0</max>
+            <resolution>0.015</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>0.01</stddev>
+          </noise>
+        </ray>
+
+      </sensor>
+      <self_collide>0</self_collide>
+      <enable_wind>0</enable_wind>
+      <kinematic>0</kinematic>
+      <pose>8e-06 2.60856 0.829644 0 -0 0</pose>
+      <gravity>1</gravity>
+
+      <visual name='lidar_visual'>
+        <pose>0 0 0 0 -0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.0508</radius>
+            <length>0.08</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0 0 0 1</ambient>
+          <diffuse>0 0 0 1</diffuse>
+          <specular>0 0 0 1</specular>
+          <emissive>0 0 0 1</emissive>
+        </material>
+        <transparency>0</transparency>
+        <cast_shadows>1</cast_shadows>
+      </visual>
+
+      <collision name='lidar_collision'>
+        <laser_retro>0</laser_retro>
+        <max_contacts>10</max_contacts>
+        <pose>0 0 0 0 -0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.0508</radius>
+            <length>0.08</length>
+          </cylinder>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.5</mu> <!-- 마찰 계수 증가 -->
+              <mu2>1.5</mu2> <!-- 두 번째 마찰 계수 -->
+              <mu2>1</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+            <torsional>
+              <coefficient>1</coefficient>
+              <patch_radius>0</patch_radius>
+              <surface_radius>0</surface_radius>
+              <use_patch_radius>1</use_patch_radius>
+              <ode>
+                <slip>0</slip>
+              </ode>
+            </torsional>
+          </friction>
+          <bounce>
+            <restitution_coefficient>0</restitution_coefficient>
+            <threshold>1e+06</threshold>
+          </bounce>
+          <contact>
+            <collide_without_contact>0</collide_without_contact>
+            <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+            <collide_bitmask>1</collide_bitmask>
+            <ode>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0</min_depth>
+            </ode>
+            <bullet>
+              <split_impulse>1</split_impulse>
+              <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+              <soft_cfm>0</soft_cfm>
+              <soft_erp>0.2</soft_erp>
+              <kp>1e+13</kp>
+              <kd>1</kd>
+            </bullet>
+          </contact>
+        </surface>
+      </collision>
+    </link>
+
+    <joint name='lidar_joint' type='fixed'>
+      <parent>chassis</parent>
+      <child>lidar_link</child>
+      <pose>0 0 0 0 -0 0</pose>
+      <physics>
+        <ode>
+          <limit>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </limit>
+          <suspension>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </suspension>
+        </ode>
+      </physics>
+    </joint>    
+
+    <plugin
+      filename="gz-sim-diff-drive-system"
+      name="gz::sim::systems::DiffDrive">
+      <left_joint>rear_left_wheel_joint</left_joint>
+      <right_joint>rear_right_wheel_joint</right_joint>
+      <wheel_separation>1.57</wheel_separation>
+      <wheel_radius>0.31265</wheel_radius>
+      <odom_publish_frequency>30</odom_publish_frequency>
+      <max_linear_acceleration>5</max_linear_acceleration>
+      <min_linear_acceleration>-5</min_linear_acceleration>
+      <max_angular_acceleration>3</max_angular_acceleration>
+      <min_angular_acceleration>-3</min_angular_acceleration>
+      <max_linear_velocity>8</max_linear_velocity>
+      <min_linear_velocity>-8</min_linear_velocity>
+      <max_angular_velocity>2</max_angular_velocity>
+      <min_angular_velocity>-2</min_angular_velocity>
+      <topic>/model/ego_vehicle/cmd_vel</topic>
+      <odom_topic>/model/ego_vehicle/odometry</odom_topic>
+    </plugin>
+
+    <link name="base_link">
+      <pose>-0.03203 -2.29584 0.02306 -0 -0 -1.5708</pose>
+    </link>
+
+    <joint name="base_link_connection" type="fixed">
+      <parent>chassis</parent> 
+      <child>base_link</child> 
+      <pose>0 0 0 0 -0 0</pose>
+      <physics>
+        <ode>
+          <limit>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </limit>
+          <suspension>
+            <cfm>0</cfm>
+            <erp>0.2</erp>
+          </suspension>
+        </ode>
+      </physics>
+    </joint>
+  </model>
+</sdf>
+  

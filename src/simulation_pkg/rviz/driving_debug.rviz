@@ -1,0 +1,64 @@
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 0
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /YOLO Segmentation1
+      Splitter Ratio: 0.5
+    Tree Height: 420
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: YOLO Segmentation
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /yolov8_seg_debug_image
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 10
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Name: Current View
+      Pitch: 0.785398
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 0.785398
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: true
+  Height: 900
+  Hide Left Dock: true
+  Hide Right Dock: true
+  QMainWindow State: 000000ff00000000fd0000000100000000000001560000035efc0200000001fb000000100044006900730070006c006100790073010000003d0000035e000000c900ffffff000005000000035e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Width: 1280
+  X: 80
+  Y: 80

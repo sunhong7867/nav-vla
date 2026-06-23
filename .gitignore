@@ -1,0 +1,52 @@
+# ROS 2 / colcon build artifacts
+/build/
+/install/
+/log/
+
+# Python cache and packaging artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+
+# Local environment
+.env
+.env.*
+.venv/
+venv/
+
+# IDE and assistant-local state
+.vscode/
+.idea/
+.claude/
+.agents/
+.codex
+
+# ROS bags, databases, and generated experiment outputs
+*.bag
+*.db3
+*.mcap
+*.sqlite3
+*.zip
+/src/camera_perception_pkg/camera_perception_pkg/lib/Collected_Datasets/
+/src/guardedlc/eval/results.zip
+/src/guardedlc/guardedlc/data/*.csv
+
+# Model weights are intentionally not uploaded to GitHub.
+*.pt
+*.onnx
+*.engine
+/명균's pt파일/
+
+# Local installers and debug captures
+*.deb
+/image/*screenshot*.png
+*실행.txt
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

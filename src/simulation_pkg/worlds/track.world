@@ -1,0 +1,215 @@
+<sdf version="1.6">
+  <world name="default">
+  <physics name="1ms" type="ignored">
+    <max_step_size>0.001</max_step_size>
+    <real_time_factor>1.0</real_time_factor>
+  </physics>
+
+  <plugin
+    filename="gz-sim-physics-system"
+    name="gz::sim::systems::Physics">
+  </plugin>
+  <plugin
+    filename="gz-sim-user-commands-system"
+    name="gz::sim::systems::UserCommands">
+  </plugin>
+  <plugin
+    filename="gz-sim-scene-broadcaster-system"
+    name="gz::sim::systems::SceneBroadcaster">
+  </plugin>
+  <plugin
+    filename="gz-sim-sensors-system"
+    name="gz::sim::systems::Sensors">
+    <render_engine>ogre2</render_engine>
+  </plugin>
+
+  <gui fullscreen='0'>
+      <camera name='user_camera'>
+        <pose>-3.049776 -0.241982 38.020702 0 1.511954 -0.003112</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>perspective</projection_type>
+      </camera>
+  </gui>
+
+  <scene>
+    <ambient>0.4 0.4 0.4 1</ambient>
+    <background>0.7 0.7 0.7 1</background>
+    <shadows>0</shadows>
+  </scene>
+
+  
+  <model name='top_camera'> <!-- 모델의 이름 -->
+      <link name='top_camera_link'> <!-- 링크 정의 -->
+        <inertial>
+          <mass>1</mass>
+          <inertia>
+            <ixx>0.166667</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>0.166667</iyy>
+            <iyz>0</iyz>
+            <izz>0.166667</izz>
+          </inertia>
+          <pose>0 0 0 0 0 1.57</pose> <!-- 카메라 박스 위치 조정 -->
+        </inertial>
+        <pose>0 0 0 0 -0 0</pose>
+        <gravity>1</gravity>
+        <self_collide>0</self_collide>
+        <kinematic>0</kinematic>
+        <enable_wind>0</enable_wind>
+        <visual name='visual'>
+          <pose>0 0 0 0 0 1.57</pose> <!-- 카메라 박스 위치 조정 -->
+          <geometry>
+            <box>
+              <size>0.8 0.2 0.2</size>
+            </box>
+          </geometry>
+          <material>
+            <lighting>1</lighting>
+            <ambient>0.15 0.25 0.65 1</ambient>
+            <diffuse>0.2 0.4 0.9 1</diffuse>
+            <specular>0.02 0.02 0.02 1</specular>
+            <emissive>0.02 0.02 0.08 1</emissive>
+          </material>
+          <transparency>0</transparency>
+          <cast_shadows>0</cast_shadows>
+        </visual>
+        <collision name='collision'>
+          <laser_retro>0</laser_retro>
+          <max_contacts>10</max_contacts>
+          <pose>0 0 0 0 0 1.57</pose> <!-- 카메라 박스 위치 조정 -->
+          <geometry>
+            <box>
+              <size>0.8 0.2 0.2</size>
+            </box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1</mu>
+                <mu2>1</mu2>
+                <fdir1>0 0 0</fdir1>
+                <slip1>0</slip1>
+                <slip2>0</slip2>
+              </ode>
+              <torsional>
+                <coefficient>1</coefficient>
+                <patch_radius>0</patch_radius>
+                <surface_radius>0</surface_radius>
+                <use_patch_radius>1</use_patch_radius>
+                <ode>
+                  <slip>0</slip>
+                </ode>
+              </torsional>
+            </friction>
+            <bounce>
+              <restitution_coefficient>0</restitution_coefficient>
+              <threshold>1e+06</threshold>
+            </bounce>
+            <contact>
+              <collide_without_contact>0</collide_without_contact>
+              <collide_without_contact_bitmask>1</collide_without_contact_bitmask>
+              <collide_bitmask>1</collide_bitmask>
+              <ode>
+                <soft_cfm>0</soft_cfm>
+                <soft_erp>0.2</soft_erp>
+                <kp>1e+13</kp>
+                <kd>1</kd>
+                <max_vel>0.01</max_vel>
+                <min_depth>0</min_depth>
+              </ode>
+              <bullet>
+                <split_impulse>1</split_impulse>
+                <split_impulse_penetration_threshold>-0.01</split_impulse_penetration_threshold>
+                <soft_cfm>0</soft_cfm>
+                <soft_erp>0.2</soft_erp>
+                <kp>1e+13</kp>
+                <kd>1</kd>
+              </bullet>
+            </contact>
+          </surface>
+        </collision>
+
+        <sensor name='top_camera' type='camera'>
+          <pose>0 0 0 0 0 0</pose>
+          <update_rate>30</update_rate>
+          <visualize>0</visualize>
+          <topic>top_camera</topic>
+          <camera name='head'>
+            <horizontal_fov>1.10</horizontal_fov>
+            <image>
+              <width>640</width> <!-- 위성캠 사이즈 조정 -->
+              <height>480</height>
+              <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.03</near>
+              <far>200</far>
+            </clip>
+            <noise>
+              <type>gaussian</type>
+              <mean>0</mean>
+              <stddev>0.007</stddev>
+            </noise>
+          </camera>
+        </sensor>
+      </link>
+      <static>1</static>
+      <allow_auto_disable>1</allow_auto_disable>
+      <pose>0 0 45.0 0 1.57 3.14159</pose> <!-- 카메라 프레임의 위치 조정 -->
+    </model>
+    
+    <model name="ground">
+      <pose>0 0 0 0 0 1.57</pose>
+      <static>1</static>
+      
+      <link name="ground">
+        <collision name="ground_collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>58.1364 43.71084</size>
+            </plane>
+          </geometry>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+          </surface>
+        </collision>
+        
+        <visual name="ground_visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>58.1364 43.71084</size>
+            </plane>
+          </geometry>
+          
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+            <pbr>
+              <metal>
+                <albedo_map>model://race_track/materials/textures/track.png</albedo_map>
+                <roughness>1.0</roughness>
+                <metalness>0.0</metalness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <light name='sun' type='directional'>
+      <pose>0 0 10 0 -0 0</pose>           <direction>-0.5 0.1 -0.9</direction> <diffuse>1.0 1.0 1.0 1</diffuse>   <specular>0.5 0.5 0.5 1</specular>   <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <cast_shadows>0</cast_shadows> </light>
+    
+  </world>
+</sdf>
