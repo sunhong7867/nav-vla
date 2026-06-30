@@ -23,6 +23,7 @@ import urllib.request
 from tkinter import scrolledtext
 from tkinter import ttk
 
+import numpy as np
 import rclpy
 import yaml
 from rclpy.node import Node
@@ -32,8 +33,20 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import QoSReliabilityPolicy
 from std_msgs.msg import String
 
+try:
+    import sounddevice as sd
+except ImportError:
+    sd = None
+
+try:
+    from faster_whisper import WhisperModel
+except ImportError:
+    WhisperModel = None
+
 
 MODEL = "qwen3:4b"
+VOICE_SAMPLE_RATE = 16000
+WHISPER_MODEL = os.environ.get("NAV_VLA_WHISPER_MODEL", "base")
 DEFAULT_MAP_PATH = os.path.expanduser(
     "~/ROS2_project/nav-vla/src/nav_vla/config/zone_map.yaml"
 )
@@ -73,7 +86,25 @@ Zones (name : roles):
 {zones}
 
 Guidelines:
+- If the user is asking a question about whether something is possible, such as
+  "가능한가?", "can I", "is it possible", or "할 수 있어?", action=none.
+- Scheduled future actions like "change lane at T2" are not supported. If the
+  user asks about them, action=none. If the user explicitly commands one, choose
+  the closest immediate supported action only when the target and lane are clear.
+- If a command contains both start/go/drive/change-lane words and a target zone,
+  prefer one drive_to_zone action. Include the requested lane if lane1/lane2 is present.
+- If the user says change lane without specifying lane1/lane2, use the opposite
+  of the current lane from the context. If current_lane=lane2, return lane=lane1.
+  If current_lane=lane1, return lane=lane2.
+- Treat "start line", "start 선", and "출발선" as the Start zone when the user says
+  stop at, go to, or drive to that line.
+- For commands like "change lane and stop at T4", action=drive_to_zone, zone=T4,
+  lane=the opposite of current_lane.
+- For commands like "start drive and stop at T4. change lane1",
+  action=drive_to_zone, zone=T4, lane=lane1.
 - For commands like "1차선 따라 T2까지 가", action=drive_to_zone, zone=T2, lane=lane1.
+- For commands like "stop at M3", "M3에서 멈춰", "M3까지 가서 정지",
+  "go to M3 and stop", or "stop at crosswalk", action=drive_to_zone with that zone.
 - Do not infer a lane from a zone name, target name, or the word "line".
 - "line", "기준선", "재위치선", and "stop line" mean a target zone/line, not lane1.
 - For commands like "go M2 line", action=drive_to_zone, zone=M2, lane=default.
@@ -82,8 +113,9 @@ Guidelines:
 - For commands like "2차선으로 변경", action=change_lane, lane=lane2, zone=null.
 - Treat T1, M1, and T1/M1 as the same zone. Return zone=T1/M1 for all three.
 - Treat crosswalk and 횡단보도 as crosswalk_stop. Return zone=crosswalk_stop.
-- For "정지", "stop", or "cancel", action=stop.
-- For "출발", "start", "resume", or "continue", action=start.
+- For standalone "정지", "stop", or "cancel" without a target zone, action=stop.
+- For standalone "출발", "start", "resume", or "continue" without a target zone,
+  action=start.
 - Use only exact zone names from the list.
 - If no zone matches for a drive_to_zone request, action=none.
 
@@ -194,6 +226,13 @@ class ChatGuiNode(Node):
             "think": False,
             "messages": [
                 {"role": "system", "content": self.system_prompt},
+                {
+                    "role": "system",
+                    "content": (
+                        f"Runtime context: current_lane={self.current_lane}. "
+                        "Use this only to resolve unspecified lane-change direction."
+                    ),
+                },
                 {"role": "user", "content": text},
             ],
             "format": schema,
@@ -328,6 +367,14 @@ class ChatGuiWindow:
         self.style.configure("Title.TLabel", font=("TkDefaultFont", 14, "bold"))
         self.style.configure("Status.TLabel", foreground="#344054")
         self.style.configure("Primary.TButton", padding=(12, 6))
+        self.style.configure("Record.TButton", padding=(12, 6))
+
+        self.recording = False
+        self.record_stream = None
+        self.record_frames = []
+        self.voice_busy = False
+        self.whisper_model = None
+        self.voice_available = sd is not None and WhisperModel is not None
 
         outer = ttk.Frame(self.root, padding=14)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -353,6 +400,21 @@ class ChatGuiWindow:
             style="Primary.TButton",
         )
         self.send_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.voice_auto_send = tk.BooleanVar(value=True)
+        self.voice_button = ttk.Button(
+            entry_row,
+            text="Voice",
+            command=self._toggle_voice,
+            style="Record.TButton",
+        )
+        self.voice_button.pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Checkbutton(
+            entry_row,
+            text="Auto send",
+            variable=self.voice_auto_send,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        if not self.voice_available:
+            self.voice_button.config(state=tk.DISABLED)
 
         content = ttk.Frame(outer)
         content.pack(fill=tk.BOTH, expand=True)
@@ -398,6 +460,11 @@ class ChatGuiWindow:
 
         self._append("system", f"zones: {', '.join(node.zone_names)}")
         self._append("system", "예: 'M3로 가', '2차선 따라서 crosswalk_stop까지 가', '1차선으로 변경', '정지'")
+        if self.voice_available:
+            self._append("system", f"voice ready: whisper={WHISPER_MODEL}")
+            self._append("system", "voice auto-send: on")
+        else:
+            self._append("system", "voice disabled: install sounddevice and faster-whisper")
         self.entry.focus_set()
         self.root.after(150, self._drain_status)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -412,6 +479,7 @@ class ChatGuiWindow:
     def _send_text(self, text):
         self._append("user", f"User: {text}")
         self.send_button.config(state=tk.DISABLED)
+        self.voice_button.config(state=tk.DISABLED)
         self.status_text.set(self._debug_text(extra="thinking..."))
 
         def worker():
@@ -422,6 +490,8 @@ class ChatGuiWindow:
 
     def _handle_result(self, parsed, latency, error):
         self.send_button.config(state=tk.NORMAL)
+        if self.voice_available and not self.recording and not self.voice_busy:
+            self.voice_button.config(state=tk.NORMAL)
         if error:
             self.status_text.set(self._debug_text(extra=f"error: {error}"))
             self._append("error", f"Error: {error}")
@@ -431,6 +501,133 @@ class ChatGuiWindow:
         self.status_text.set(self._debug_text(latency=latency))
         self._append("assistant", f"Action: {response}")
         self._append("system", compact)
+
+    def _toggle_voice(self):
+        if not self.voice_available or self.voice_busy:
+            return
+        if self.recording:
+            self._stop_voice_recording()
+        else:
+            self._start_voice_recording()
+
+    def _start_voice_recording(self):
+        self.record_frames = []
+
+        def audio_cb(indata, _frames, _time_info, status):
+            if status:
+                self.root.after(0, lambda: self._append("system", f"Voice status: {status}"))
+            self.record_frames.append(indata.copy())
+
+        try:
+            self.record_stream = sd.InputStream(
+                samplerate=VOICE_SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                callback=audio_cb,
+            )
+            self.record_stream.start()
+        except Exception as exc:
+            self.record_stream = None
+            self.record_frames = []
+            self._append("error", f"Voice error: {exc}")
+            return
+
+        self.recording = True
+        self.voice_button.config(text="Stop voice")
+        self.send_button.config(state=tk.DISABLED)
+        self.status_text.set(self._debug_text(extra="recording voice..."))
+        self._append("system", "Voice: recording started")
+
+    def _stop_voice_recording(self):
+        stream = self.record_stream
+        self.record_stream = None
+        self.recording = False
+        self.voice_busy = True
+        self.voice_button.config(text="Transcribing...", state=tk.DISABLED)
+        self.send_button.config(state=tk.DISABLED)
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception as exc:
+                self._append("error", f"Voice stop error: {exc}")
+
+        frames = list(self.record_frames)
+        self.record_frames = []
+        if not frames:
+            self._finish_voice("")
+            return
+
+        audio = np.concatenate(frames, axis=0).reshape(-1).astype(np.float32)
+
+        def worker():
+            try:
+                text = self._transcribe_voice(audio)
+                error = None
+            except Exception as exc:
+                text = ""
+                error = str(exc)
+            self.root.after(0, lambda: self._finish_voice(text, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _transcribe_voice(self, audio):
+        if self.whisper_model is None:
+            self.whisper_model = WhisperModel(
+                WHISPER_MODEL,
+                device="cpu",
+                compute_type="int8",
+            )
+        segments, _info = self.whisper_model.transcribe(
+            audio,
+            beam_size=3,
+            vad_filter=True,
+        )
+        text = " ".join(segment.text.strip() for segment in segments).strip()
+        return self._normalize_voice_text(text)
+
+    @staticmethod
+    def _normalize_voice_text(text):
+        replacements = {
+            "엠 원": "M1",
+            "엠원": "M1",
+            "엠 투": "M2",
+            "엠투": "M2",
+            "엠 쓰리": "M3",
+            "엠쓰리": "M3",
+            "티 원": "T1",
+            "티원": "T1",
+            "티 투": "T2",
+            "티투": "T2",
+            "티 쓰리": "T3",
+            "티쓰리": "T3",
+            "티 포": "T4",
+            "티포": "T4",
+        }
+        for source, target in replacements.items():
+            text = text.replace(source, target)
+        return text.strip()
+
+    def _finish_voice(self, text, error=None):
+        self.voice_busy = False
+        self.voice_button.config(text="Voice")
+        if self.voice_available:
+            self.voice_button.config(state=tk.NORMAL)
+        self.send_button.config(state=tk.NORMAL)
+        if error:
+            self.status_text.set(self._debug_text(extra=f"voice error: {error}"))
+            self._append("error", f"Voice error: {error}")
+            return
+        if not text:
+            self.status_text.set(self._debug_text(extra="voice: no speech"))
+            self._append("system", "Voice: no speech")
+            return
+        self.entry.delete(0, tk.END)
+        self.entry.insert(0, text)
+        self.status_text.set(self._debug_text(extra=f"voice: {text}"))
+        self._append("user", f"Voice: {text}")
+        if self.voice_auto_send.get():
+            self._send_text(text)
 
     def _drain_status(self):
         try:
@@ -467,6 +664,13 @@ class ChatGuiWindow:
         self.log.configure(state=tk.DISABLED)
 
     def close(self):
+        if self.record_stream is not None:
+            try:
+                self.record_stream.stop()
+                self.record_stream.close()
+            except Exception:
+                pass
+            self.record_stream = None
         self.root.quit()
         self.root.destroy()
 
