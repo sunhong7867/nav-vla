@@ -18,6 +18,7 @@ SUB_PATH_TOPIC_NAME = "path_planning_result"
 SUB_TRAFFIC_LIGHT_TOPIC_NAME = "yolov8_traffic_light_info"
 SUB_LIDAR_OBSTACLE_TOPIC_NAME = "lidar_obstacle_info"
 SUB_MOTION_CONTROL_TOPIC_NAME = "motion_control_command"
+SUB_DIRECT_MOTION_TOPIC_NAME = "direct_motion_command"
 PUB_TOPIC_NAME = "topic_control_signal"
 TIMER = 0.1
 TARGET_SPEED_RAW = 140
@@ -51,6 +52,12 @@ class MotionPlanningNode(Node):
         self.sub_motion_control_topic = self.declare_parameter(
             "sub_motion_control_topic", SUB_MOTION_CONTROL_TOPIC_NAME
         ).value
+        self.sub_direct_motion_topic = self.declare_parameter(
+            "sub_direct_motion_topic", SUB_DIRECT_MOTION_TOPIC_NAME
+        ).value
+        self.direct_motion_timeout = float(
+            self.declare_parameter("direct_motion_timeout", 0.3).value
+        )
         self.pub_topic = self.declare_parameter("pub_topic", PUB_TOPIC_NAME).value
         self.timer_period = self.declare_parameter("timer", TIMER).value
         self.target_speed_raw = int(
@@ -89,6 +96,8 @@ class MotionPlanningNode(Node):
         self.traffic_light_data = None
         self.lidar_data = None
         self.motion_stopped = False
+        self.direct_motion_command = None
+        self.direct_motion_time = None
 
         self.steering_command = 0
         self.left_speed_command = 0
@@ -112,6 +121,12 @@ class MotionPlanningNode(Node):
             self.sub_motion_control_topic,
             self.motion_control_callback,
             self.motion_control_qos_profile,
+        )
+        self.create_subscription(
+            MotionCommand,
+            self.sub_direct_motion_topic,
+            self.direct_motion_callback,
+            self.qos_profile,
         )
 
         self.publisher = self.create_publisher(MotionCommand, self.pub_topic, self.qos_profile)
@@ -141,8 +156,24 @@ class MotionPlanningNode(Node):
         else:
             self.get_logger().warn(f"unknown motion control command: {msg.data}")
 
+    def direct_motion_callback(self, msg):
+        self.direct_motion_command = msg
+        self.direct_motion_time = self.get_clock().now().nanoseconds * 1e-9
+
     def timer_callback(self):
         self.timer_count += 1
+        direct_command = self._fresh_direct_motion_command()
+        if direct_command is not None:
+            self.steering_command = int(direct_command.steering)
+            self.left_speed_command = int(direct_command.left_speed)
+            self.right_speed_command = int(direct_command.right_speed)
+            msg = MotionCommand()
+            msg.steering = self.steering_command
+            msg.left_speed = self.left_speed_command
+            msg.right_speed = self.right_speed_command
+            self.publisher.publish(msg)
+            return
+
         if not self.path_data:
             self.steering_command = 0
             self.left_speed_command = 0
@@ -193,6 +224,14 @@ class MotionPlanningNode(Node):
         msg.left_speed = self.left_speed_command
         msg.right_speed = self.right_speed_command
         self.publisher.publish(msg)
+
+    def _fresh_direct_motion_command(self):
+        if self.direct_motion_command is None or self.direct_motion_time is None:
+            return None
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if now - self.direct_motion_time > self.direct_motion_timeout:
+            return None
+        return self.direct_motion_command
 
     def _target_speed_for_steering(self, steering_command):
         steering_abs = abs(int(steering_command))

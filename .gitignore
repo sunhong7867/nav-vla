@@ -35,6 +35,10 @@ venv/
 /src/camera_perception_pkg/camera_perception_pkg/lib/Collected_Datasets/
 /src/guardedlc/eval/results.zip
 /src/guardedlc/guardedlc/data/*.csv
+# nav-vla data-engine episode recordings (frames + jsonl)
+/src/nav_vla/data/
+/src/nav_vla/data_obstacle/
+/src/nav_vla/train/checkpoints/
 
 # Model weights are intentionally not uploaded to GitHub.
 *.pt

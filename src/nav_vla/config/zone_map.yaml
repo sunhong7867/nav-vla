@@ -1,0 +1,169 @@
+frame: world
+zones:
+  Start:
+    role:
+    - 출발
+    geom: point
+    pose:
+      x: 3.7
+      y: 24.5943
+      yaw: -1.5707
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  M2:
+    role:
+    - 재위치
+    geom: point
+    pose:
+      x: -17.9419
+      y: 15.4702
+      yaw: -0.2382
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  T2:
+    role:
+    - 재위치
+    geom: point
+    pose:
+      x: -17.495
+      y: 0.6361
+      yaw: 0.1163
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  M3:
+    role:
+    - 재위치
+    geom: point
+    pose:
+      x: -16.1302
+      y: -12.7583
+      yaw: 0.1163
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  crosswalk_stop:
+    role:
+    - 정차
+    geom: point
+    pose:
+      x: -2.2048
+      y: -24.5922
+      yaw: 1.5594
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  T4:
+    role:
+    - 재위치
+    geom: point
+    pose:
+      x: 13.5554
+      y: -4.8697
+      yaw: -3.0391
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  T3:
+    role:
+    - 재위치
+    geom: point
+    pose:
+      x: -2.2207
+      y: -24.5919
+      yaw: 1.5611
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  T1/M1:
+    role:
+    - 재위치
+    - 종료
+    geom: point
+    pose:
+      x: 2.8843
+      y: 24.6757
+      yaw: -1.5726
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  OUT(통과직전):
+    role:
+    - 종료
+    geom: point
+    pose:
+      x: -1.9122
+      y: 12.1926
+      yaw: -3.1407
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  OUT(통과직후):
+    role:
+    - 종료
+    geom: point
+    pose:
+      x: -1.9174
+      y: 17.9385
+      yaw: -3.1407
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  IN:
+    role:
+    - 출발
+    geom: point
+    pose:
+      x: -2.7571
+      y: -17.5995
+      yaw: -3.1407
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  Slot1:
+    role:
+    - 정차
+    geom: point
+    pose:
+      x: 3.4386
+      y: -9.4177
+      yaw: -1.5575
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  Slot2:
+    role:
+    - 정차
+    geom: point
+    pose:
+      x: 3.3898
+      y: -5.7605
+      yaw: -1.5575
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  Slot3:
+    role:
+    - 정차
+    geom: point
+    pose:
+      x: 3.3423
+      y: -2.1937
+      yaw: -1.5575
+    tol:
+      pos: 0.3
+      yaw: 0.2
+  Slot4:
+    role:
+    - 정차
+    geom: point
+    pose:
+      x: 3.2924
+      y: 1.5488
+      yaw: -1.5575
+    tol:
+      pos: 0.3
+      yaw: 0.2
+objects: {}

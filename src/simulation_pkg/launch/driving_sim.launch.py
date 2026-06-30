@@ -9,7 +9,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -127,6 +127,8 @@ def generate_launch_description():
     rviz_config_path = os.path.join(package_dir, "rviz", "driving_debug.rviz")
     yolo_model_path = os.path.join(workspace_root, "best_cap.pt")
     use_perception_pipeline = LaunchConfiguration("use_perception_pipeline")
+    use_driver = LaunchConfiguration("use_driver")
+    use_camera = LaunchConfiguration("use_camera")
     use_lane_mode_gui = LaunchConfiguration("use_lane_mode_gui")
     use_debug_visualizers = LaunchConfiguration("use_debug_visualizers")
     use_rviz = LaunchConfiguration("use_rviz")
@@ -140,6 +142,18 @@ def generate_launch_description():
             "use_perception_pipeline",
             default_value="true",
             description="Launch the YOLO/lane/path/motion pipeline. False uses the stable lane2 map driver.",
+        ),
+        DeclareLaunchArgument(
+            "use_driver",
+            default_value="true",
+            description="Run a built-in /cmd_vel driver. Set false (with use_perception_pipeline:=false) "
+                        "for a bare sim so an external controller (e.g. zone_navigator) owns /cmd_vel.",
+        ),
+        DeclareLaunchArgument(
+            "use_camera",
+            default_value="true",
+            description="Bridge the front camera to /camera/image_raw (needed for data collection "
+                        "even when the perception pipeline is off).",
         ),
         DeclareLaunchArgument(
             "use_lane_mode_gui",
@@ -244,7 +258,7 @@ def generate_launch_description():
             output="screen",
         ),
         Node(
-            condition=IfCondition(use_perception_pipeline),
+            condition=IfCondition(use_camera),
             package="ros_gz_bridge",
             executable="parameter_bridge",
             arguments=[
@@ -293,7 +307,10 @@ def generate_launch_description():
             period=8.0,
             actions=[
                 Node(
-                    condition=UnlessCondition(use_perception_pipeline),
+                    condition=IfCondition(PythonExpression([
+                        "'", use_perception_pipeline, "' == 'false' and '",
+                        use_driver, "' == 'true'",
+                    ])),
                     package="simulation_pkg",
                     executable="simple_track_driver_node",
                     output="screen",

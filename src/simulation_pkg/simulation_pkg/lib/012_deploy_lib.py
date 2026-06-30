@@ -9,6 +9,7 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 import time
+from ament_index_python.packages import get_package_share_directory
 
 # from simulation_pkg import get_pyc
 
@@ -29,10 +30,21 @@ def check_and_download_model(file, destination_path):
 
     
 HOME = os.path.expanduser("~")
+
+
+def _package_root():
+    current_file = Path(__file__).resolve()
+    for parent in current_file.parents:
+        source_candidate = parent / "src" / "simulation_pkg"
+        if (source_candidate / "models").is_dir():
+            return source_candidate
+        if parent.name == "simulation_pkg" and (parent / "models").is_dir():
+            return parent
+
+    return Path(get_package_share_directory("simulation_pkg"))
     
 def get_base_path(extra_dirs=None, repeat_last=False):
-    workspace_root = Path(__file__).resolve().parents[4]
-    base_path = workspace_root / "src" / "simulation_pkg"
+    base_path = _package_root()
 
     if repeat_last:
         base_path = base_path / "simulation_pkg"
@@ -91,9 +103,17 @@ def wait_for_gz_service(service_name, timeout_sec=40):
 
 def wait_for_gz_model(model_name, timeout_sec=15):
     deadline = time.time() + timeout_sec
-    command = (
-        "source /opt/ros/jazzy/setup.bash && "
-        "/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz model --list --force-version 8"
+    command = "source /opt/ros/jazzy/setup.bash && " + " ".join(
+        shlex.quote(part)
+        for part in [
+            "/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz",
+            "model",
+            "-m",
+            model_name,
+            "-p",
+            "--force-version",
+            "8",
+        ]
     )
 
     while time.time() < deadline:
@@ -102,14 +122,7 @@ def wait_for_gz_model(model_name, timeout_sec=15):
             capture_output=True,
             text=True,
         )
-        models = set()
-        for line in result.stdout.splitlines():
-            model = line.strip().lstrip("-* ").strip()
-            if not model or model.lower().startswith("available"):
-                continue
-            models.add(model)
-
-        if model_name in models:
+        if result.returncode == 0 and "Pose" in result.stdout:
             return True
         time.sleep(0.5)
 
@@ -118,9 +131,17 @@ def wait_for_gz_model(model_name, timeout_sec=15):
 
 def wait_for_gz_model_removed(model_name, timeout_sec=10):
     deadline = time.time() + timeout_sec
-    command = (
-        "source /opt/ros/jazzy/setup.bash && "
-        "/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz model --list --force-version 8"
+    command = "source /opt/ros/jazzy/setup.bash && " + " ".join(
+        shlex.quote(part)
+        for part in [
+            "/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz",
+            "model",
+            "-m",
+            model_name,
+            "-p",
+            "--force-version",
+            "8",
+        ]
     )
 
     while time.time() < deadline:
@@ -129,14 +150,7 @@ def wait_for_gz_model_removed(model_name, timeout_sec=10):
             capture_output=True,
             text=True,
         )
-        models = set()
-        for line in result.stdout.splitlines():
-            model = line.strip().lstrip("-* ").strip()
-            if not model or model.lower().startswith("available"):
-                continue
-            models.add(model)
-
-        if model_name not in models:
+        if result.returncode != 0 or "Pose" not in result.stdout:
             return True
         time.sleep(0.5)
 
@@ -183,12 +197,12 @@ def remove_model(entity_name):
 def reset_model(entity_name, model_name, coordinates):
     remove_model(entity_name)
     time.sleep(0.5)
-    load_model(entity_name, model_name, coordinates)
+    load_model(entity_name, model_name, coordinates, skip_if_exists=False)
 
 
 
 # 시뮬레이션 세팅
-def load_model(entity_name, model_name, random_coordinates):
+def load_model(entity_name, model_name, random_coordinates, skip_if_exists=True):
     
     x, y, z, roll, pitch, yaw = random_coordinates
     
@@ -230,7 +244,7 @@ def load_model(entity_name, model_name, random_coordinates):
     if not wait_for_gz_service("/world/default/create"):
         raise RuntimeError("Timed out waiting for /world/default/create")
 
-    if wait_for_gz_model(entity_name, timeout_sec=1):
+    if skip_if_exists and wait_for_gz_model(entity_name, timeout_sec=1):
         print(f"[load_model] {entity_name} already exists; skipping spawn")
         return
 

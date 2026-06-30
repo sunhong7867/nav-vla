@@ -51,6 +51,8 @@ class Yolov8InfoExtractor(Node):
             self.declare_parameter("target_lane", "lane2").value,
             "lane2",
         )
+        # lane-change ramp duration (s): larger = gentler steering. Live-tunable.
+        self.declare_parameter("lane_change_duration", LANE_CHANGE_DURATION_SEC)
         self.mode_topic = self.declare_parameter("mode_topic", MODE_TOPIC_NAME).value
         self.legacy_lane_select_topic = self.declare_parameter(
             "legacy_lane_select_topic", LEGACY_LANE_SELECT_TOPIC
@@ -259,7 +261,8 @@ class Yolov8InfoExtractor(Node):
             return fallback
 
         elapsed = time.monotonic() - self.transition_start_time
-        progress = max(0.0, min(1.0, elapsed / max(LANE_CHANGE_DURATION_SEC, 1e-3)))
+        duration = float(self.get_parameter("lane_change_duration").value)
+        progress = max(0.0, min(1.0, elapsed / max(duration, 1e-3)))
         ratio = progress * progress * (3.0 - 2.0 * progress)
 
         lane = self._blend_lane_infos(source_lane, target_lane, ratio)

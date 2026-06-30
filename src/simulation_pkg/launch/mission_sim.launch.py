@@ -121,10 +121,20 @@ def generate_launch_description():
         os.path.join(workspace_root, "parking_front.pt"),
         os.path.join(workspace_root, "parking_rear.pt"),
     ]
+    # Only weights that actually exist on disk (missing ones break detection).
+    # best_cap.pt is the lane model needed for driving; keep it primary.
+    lane_model_path = os.path.join(workspace_root, "best_cap.pt")
+    existing_models = [p for p in yolo_model_paths if os.path.exists(p)]
+    if lane_model_path in existing_models:
+        existing_models.remove(lane_model_path)
+    existing_models.insert(0, lane_model_path)
     use_debug_visualizers = LaunchConfiguration("use_debug_visualizers")
     use_rqt = LaunchConfiguration("use_rqt")
     use_obstacles = LaunchConfiguration("use_obstacles")
     use_traffic_light = LaunchConfiguration("use_traffic_light")
+    use_driver = LaunchConfiguration("use_driver")
+    driver_cmd_topic = LaunchConfiguration("driver_cmd_topic")
+    motion_lidar_topic = LaunchConfiguration("motion_lidar_topic")
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -146,6 +156,25 @@ def generate_launch_description():
             "use_traffic_light",
             default_value="true",
             description="Spawn the mission traffic light stand.",
+        ),
+        DeclareLaunchArgument(
+            "use_driver",
+            default_value="true",
+            description="Run the old YOLO/lane/path/motion driver that owns /cmd_vel. "
+                        "Set false so an external controller "
+                        "drives while obstacles/traffic light/camera stay spawned.",
+        ),
+        DeclareLaunchArgument(
+            "driver_cmd_topic",
+            default_value="/cmd_vel",
+            description="Topic the lane-following driver publishes to. Set to /cmd_nav "
+                        "if another node should post-process driving commands.",
+        ),
+        DeclareLaunchArgument(
+            "motion_lidar_topic",
+            default_value="lidar_obstacle_info",
+            description="motion_planner's lidar-obstacle STOP topic. Set to /none for "
+                        "avoidance mode so it does NOT stop on obstacles.",
         ),
         SetEnvironmentVariable(
             name="GZ_SIM_RESOURCE_PATH",
@@ -226,6 +255,14 @@ def generate_launch_description():
             output="screen",
         ),
         Node(
+            package="ros_gz_bridge",
+            executable="parameter_bridge",
+            arguments=[
+                "/scan@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan",
+            ],
+            output="screen",
+        ),
+        Node(
             condition=IfCondition(use_rqt),
             package="rqt_gui",
             executable="rqt_gui",
@@ -260,8 +297,8 @@ def generate_launch_description():
                     package="camera_perception_pkg",
                     executable="yolov8_node",
                     parameters=[{
-                        "model": yolo_model_paths[0],
-                        "models": yolo_model_paths,
+                        "model": lane_model_path,
+                        "models": existing_models,
                         "device": "cuda:0",
                         "ignore_class_names": ["crosswalk", "end_line", "endline", "parking_space", "parkingspace"],
                         "inference_period": 0.0,
@@ -278,6 +315,14 @@ def generate_launch_description():
                         "use_crosswalk_detection": False,
                         "enable_auto_lane_change": False,
                     }],
+                    output="screen",
+                ),
+                # Lidar obstacle detection (ROS-native; gz CLI is unreliable).
+                # Reads /scan directly -> /lidar_obstacle_info (Bool).
+                Node(
+                    condition=IfCondition(use_obstacles),
+                    package="lidar_perception_pkg",
+                    executable="lidar_obstacle_detector_node",
                     output="screen",
                 ),
                 Node(
@@ -306,18 +351,23 @@ def generate_launch_description():
                     output="screen",
                 ),
                 Node(
+                    condition=IfCondition(use_driver),
                     package="decision_making_pkg",
                     executable="path_planner_node",
                     output="screen",
                 ),
                 Node(
+                    condition=IfCondition(use_driver),
                     package="decision_making_pkg",
                     executable="motion_planner_node",
+                    parameters=[{"sub_lidar_obstacle_topic": motion_lidar_topic}],
                     output="screen",
                 ),
                 Node(
+                    condition=IfCondition(use_driver),
                     package="simulation_pkg",
                     executable="sim_simulation_sender_node",
+                    parameters=[{"pub_topic": driver_cmd_topic}],
                     output="screen",
                 ),
             ],
