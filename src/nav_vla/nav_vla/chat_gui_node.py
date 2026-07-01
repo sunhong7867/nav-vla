@@ -66,7 +66,10 @@ ZONE_ALIASES = {
 SYSTEM_TEMPLATE = """You are a ROS 2 driving-command interpreter for a small track car.
 The user may write Korean or English.
 
-Return exactly one compact JSON object. Do not include explanations outside JSON.
+Return one compact JSON object with an ordered "steps" list. Each step is one
+action. A single-intent command has one step; a multi-intent command has one
+step per intent, in the order the user stated them. Do not include explanations
+outside JSON.
 
 Available actions:
 - drive_to_zone: drive along a lane until one listed zone is reached.
@@ -88,42 +91,66 @@ Zones (name : roles):
 Guidelines:
 - If the user is asking a question about whether something is possible, such as
   "가능한가?", "can I", "is it possible", or "할 수 있어?", action=none.
-- Scheduled future actions like "change lane at T2" are not supported. If the
-  user asks about them, action=none. If the user explicitly commands one, choose
-  the closest immediate supported action only when the target and lane are clear.
-- If a command contains both start/go/drive/change-lane words and a target zone,
-  prefer one drive_to_zone action. Include the requested lane if lane1/lane2 is present.
+- Position-triggered actions, where the trigger is REACHING a listed zone (words
+  like "at <zone>", "<zone>에서", "<zone> 지나서", "after <zone>", "<zone>까지 가서"),
+  ARE supported by sequencing through that zone as a waypoint. See the waypoint
+  rule below. Time-based or sensor-based triggers ("after 5 seconds", "5초 뒤",
+  "when you see an obstacle", "장애물 보이면") are NOT supported: action=none.
 - If the user says change lane without specifying lane1/lane2, use the opposite
   of the current lane from the context. If current_lane=lane2, return lane=lane1.
   If current_lane=lane1, return lane=lane2.
 - Treat "start line", "start 선", and "출발선" as the Start zone when the user says
   stop at, go to, or drive to that line.
-- For commands like "change lane and stop at T4", action=drive_to_zone, zone=T4,
-  lane=the opposite of current_lane.
-- For commands like "start drive and stop at T4. change lane1",
-  action=drive_to_zone, zone=T4, lane=lane1.
-- For commands like "1차선 따라 T2까지 가", action=drive_to_zone, zone=T2, lane=lane1.
+- For commands like "1차선 따라 T2까지 가", one step: drive_to_zone, zone=T2, lane=lane1.
 - For commands like "stop at M3", "M3에서 멈춰", "M3까지 가서 정지",
-  "go to M3 and stop", or "stop at crosswalk", action=drive_to_zone with that zone.
+  "go to M3 and stop", or "stop at crosswalk", one step: drive_to_zone with that zone.
 - Do not infer a lane from a zone name, target name, or the word "line".
 - "line", "기준선", "재위치선", and "stop line" mean a target zone/line, not lane1.
-- For commands like "go M2 line", action=drive_to_zone, zone=M2, lane=default.
+- For commands like "go M2 line", one step: drive_to_zone, zone=M2, lane=default.
 - For commands like "차선 무시하고 M3로 가", "최단거리로 M3", or "direct to M3",
-  action=drive_direct, zone=M3, lane=default.
-- For commands like "2차선으로 변경", action=change_lane, lane=lane2, zone=null.
+  one step: drive_direct, zone=M3, lane=default.
+- For commands like "2차선으로 변경", one step: change_lane, lane=lane2, zone=null.
 - Treat T1, M1, and T1/M1 as the same zone. Return zone=T1/M1 for all three.
 - Treat crosswalk and 횡단보도 as crosswalk_stop. Return zone=crosswalk_stop.
-- For standalone "정지", "stop", or "cancel" without a target zone, action=stop.
+- For standalone "정지", "stop", or "cancel" without a target zone, one step: stop.
 - For standalone "출발", "start", "resume", or "continue" without a target zone,
-  action=start.
+  one step: start.
 - Use only exact zone names from the list.
-- If no zone matches for a drive_to_zone request, action=none.
+- If no zone matches for a drive_to_zone request, use action=none for that step.
 
-Schema:
+Merging vs. sequencing:
+- MERGE a lane choice with a single destination that is driven in that lane into
+  ONE drive_to_zone step, but ONLY when the lane change is not tied to a location.
+  "change lane and go to T4" or "change lane and stop at T4" -> one step:
+  drive_to_zone, zone=T4, lane=the opposite of current_lane. "start drive and stop
+  at T4 on lane1" -> one step: drive_to_zone, zone=T4, lane=lane1.
+- WAYPOINT: when the lane change (or other action) is tied to a listed zone AND a
+  further destination is given, sequence through the zone. Drive to the waypoint
+  zone in the CURRENT lane (lane=default), then drive to the destination in the
+  new lane. "M2에서 차선 변경하고 T4까지 가" or "change lane at M2 then go to T4" ->
+  two steps: [drive_to_zone zone=M2 lane=default, drive_to_zone zone=T4
+  lane=opposite]. The lane switch happens when the car reaches M2, not at the
+  start, and M2 is not skipped.
+- SEQUENCE when the user states actions to perform in order. Trigger words:
+  "first", "then", "after", "next", "and then", "먼저", "그다음", "그리고", "-고
+  나서", or two different destinations. Emit one step per intent, in order.
+  "Go to start line first, then change lane" -> two steps:
+  [drive_to_zone zone=Start lane=default, change_lane lane=opposite].
+  "Drive to M2 then to T3" -> [drive_to_zone M2, drive_to_zone T3].
+- change_lane already starts motion. So combine start/stop with change-lane into
+  ONE step: "start driving and change lane" or "change lane and start driving"
+  -> change_lane, lane=opposite. "change lane and stop" or "stop and change lane"
+  -> stop (stopping overrides the lane change).
+
+Schema (return exactly this shape):
 {{
-  "action": "drive_to_zone" | "drive_direct" | "change_lane" | "keep_lane" | "stop" | "start" | "none",
-  "zone": <one listed zone name or null>,
-  "lane": "lane1" | "lane2" | "default",
+  "steps": [
+    {{
+      "action": "drive_to_zone" | "drive_direct" | "change_lane" | "keep_lane" | "stop" | "start" | "none",
+      "zone": <one listed zone name or null>,
+      "lane": "lane1" | "lane2" | "default"
+    }}
+  ],
   "reason": <short Korean or English reason>
 }}"""
 
@@ -167,9 +194,13 @@ class ChatGuiNode(Node):
         self.lane_pub = self.create_publisher(String, lane_command_topic, transient_qos)
         self.motion_pub = self.create_publisher(String, motion_control_topic, transient_qos)
         self.status_q = queue.Queue()
+        self.event_q = queue.Queue()
         self.last_parsed = None
         self.last_dispatch = "-"
-        self.create_subscription(String, status_topic, lambda msg: self.status_q.put(msg.data), 10)
+        self._plan_lock = threading.Lock()
+        self.pending_steps = []
+        self._waiting = None
+        self.create_subscription(String, status_topic, lambda msg: self._handle_status(msg.data), 10)
         self.create_subscription(String, lane_state_topic, self._lane_state_cb, transient_qos)
 
         self.get_logger().info(
@@ -199,7 +230,7 @@ class ChatGuiNode(Node):
 
     def parse_command(self, text):
         zone_enum = self.zone_names + ["T1", "M1", None]
-        schema = {
+        step_schema = {
             "type": "object",
             "properties": {
                 "action": {
@@ -216,9 +247,16 @@ class ChatGuiNode(Node):
                 },
                 "zone": {"type": ["string", "null"], "enum": zone_enum},
                 "lane": {"type": "string", "enum": ["lane1", "lane2", "default"]},
-                "reason": {"type": "string"},
             },
             "required": ["action", "lane"],
+        }
+        schema = {
+            "type": "object",
+            "properties": {
+                "steps": {"type": "array", "items": step_schema, "minItems": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["steps"],
         }
         payload = {
             "model": MODEL,
@@ -236,7 +274,7 @@ class ChatGuiNode(Node):
                 {"role": "user", "content": text},
             ],
             "format": schema,
-            "options": {"temperature": 0, "num_predict": 180},
+            "options": {"temperature": 0, "num_predict": 256},
         }
         request = urllib.request.Request(
             f"{self.host}/api/chat",
@@ -256,21 +294,56 @@ class ChatGuiNode(Node):
             parsed = json.loads(content)
         except json.JSONDecodeError:
             return None, time.monotonic() - started, f"bad json: {content[:160]}"
-        return self._normalize_parsed(parsed), time.monotonic() - started, None
+        return self._normalize_plan(parsed), time.monotonic() - started, None
 
-    def dispatch(self, parsed):
-        action = parsed["action"]
-        lane = parsed["lane"]
-        zone = parsed.get("zone")
-        self.last_parsed = dict(parsed)
+    def dispatch_plan(self, plan):
+        """Queue an ordered plan and dispatch steps up to the first blocking drive.
+
+        A new plan replaces any plan still in flight. Returns a summary string of
+        the steps dispatched in this synchronous burst; later steps (unblocked by
+        the navigator reaching a zone) are announced through event_q.
+        """
+        steps = plan.get("steps", [])
+        with self._plan_lock:
+            self.last_parsed = {"steps": [dict(s) for s in steps], "reason": plan.get("reason", "")}
+            self.pending_steps = [dict(s) for s in steps]
+            self._waiting = None
+            messages = self._run_pending()
+        summary = " / ".join(m for m in messages if m)
+        return summary or "처리할 수 있는 주행 명령을 찾지 못했습니다."
+
+    def _run_pending(self):
+        """Dispatch queued steps until a drive step starts (and we must wait for
+        arrival) or the queue empties. Caller must hold self._plan_lock.
+        Returns the list of message strings produced in this burst.
+        """
+        messages = []
+        while self.pending_steps:
+            step = self.pending_steps.pop(0)
+            message, wait = self._dispatch_step(step)
+            messages.append(message)
+            if wait is not None:
+                self._waiting = wait
+                return messages
+        self._waiting = None
+        return messages
+
+    def _dispatch_step(self, step):
+        """Execute one step. Returns (message, wait) where wait is None for an
+        instant step, or ("zone"|"direct", zone_name) if the step started an
+        asynchronous drive that must complete before the next step runs.
+        """
+        action = step["action"]
+        lane = step["lane"]
+        zone = step.get("zone")
 
         if action == "drive_to_zone":
             if zone not in self.zones:
                 self.last_dispatch = f"invalid zone: {zone}"
-                return f"zone을 찾지 못했습니다: {zone}"
+                return f"zone을 찾지 못했습니다: {zone}", None
             if self._is_parking_slot(zone):
                 self.last_dispatch = f"unsupported lane goal: {zone}"
-                return f"{zone}은 주차 공간이라 차선 추종만으로는 도착할 수 없습니다. 주차 controller 단계에서 처리해야 합니다."
+                return f"{zone}은 주차 공간이라 차선 추종만으로는 도착할 수 없습니다. 주차 controller 단계에서 처리해야 합니다.", None
             payload = {"zone": zone}
             if lane in {"lane1", "lane2"}:
                 payload["lane"] = lane
@@ -279,48 +352,96 @@ class ChatGuiNode(Node):
             self.nav_goal_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
             lane_text = f" / {lane}" if lane in {"lane1", "lane2"} else ""
             self.last_dispatch = f"/nav_goal {payload}"
-            return f"{zone}{lane_text} 목표로 이동합니다."
+            return f"{zone}{lane_text} 목표로 이동합니다.", ("zone", zone)
 
         if action == "drive_direct":
             if zone not in self.zones:
                 self.last_dispatch = f"invalid direct zone: {zone}"
-                return f"zone을 찾지 못했습니다: {zone}"
+                return f"zone을 찾지 못했습니다: {zone}", None
             self.nav_goal_pub.publish(String(data="stop"))
             self.motion_pub.publish(String(data="stop"))
             self.direct_goal_pub.publish(String(data=zone))
             self.last_dispatch = f"/direct_nav_goal {zone}"
-            return f"차선을 무시하고 {zone}까지 직접 이동합니다."
+            return f"차선을 무시하고 {zone}까지 직접 이동합니다.", ("direct", zone)
 
         if action in {"change_lane", "keep_lane"}:
             if lane not in {"lane1", "lane2"}:
                 self.last_dispatch = "missing lane"
-                return "차선이 명확하지 않습니다."
+                return "차선이 명확하지 않습니다.", None
             self.lane_pub.publish(String(data=lane))
             self.motion_pub.publish(String(data="start"))
             self.last_dispatch = f"/lane_mode_command {lane}"
-            return f"{lane}으로 주행합니다."
+            return f"{lane}으로 주행합니다.", None
 
         if action == "stop":
             self.motion_pub.publish(String(data="stop"))
             self.nav_goal_pub.publish(String(data="stop"))
             self.direct_goal_pub.publish(String(data="stop"))
             self.last_dispatch = "/motion_control_command stop"
-            return "정지합니다."
+            return "정지합니다.", None
 
         if action == "start":
             self.motion_pub.publish(String(data="start"))
             self.last_dispatch = "/motion_control_command start"
-            return "주행을 시작합니다."
+            return "주행을 시작합니다.", None
 
         self.last_dispatch = "none"
-        return "처리할 수 있는 주행 명령을 찾지 못했습니다."
+        return None, None
+
+    def _handle_status(self, text):
+        """Forward navigator status to the GUI and advance the plan queue when the
+        drive we were waiting on completes (or is cancelled)."""
+        self.status_q.put(text)
+        with self._plan_lock:
+            waiting = self._waiting
+            if waiting is None:
+                return
+            kind, name = waiting
+            if kind == "zone" and text.startswith("arrived:"):
+                parts = text.split(None, 2)
+                if len(parts) > 1 and self._zone_match(parts[1], name):
+                    self._advance_locked()
+            elif kind == "direct" and text.startswith("direct arrived:"):
+                parts = text.split(None, 2)
+                if len(parts) > 2 and self._zone_match(parts[2], name):
+                    self._advance_locked()
+            elif kind == "zone" and (text.startswith("idle:") or text.startswith("error:")):
+                # A lane-follow drive never self-cancels, so idle/error here means the
+                # drive was cancelled or failed externally; abandon the rest of the plan.
+                # (A drive_direct step self-cancels /nav_goal, so its idle is ignored.)
+                self.pending_steps = []
+                self._waiting = None
+                self.event_q.put(("system", "남은 계획 단계를 취소했습니다."))
+
+    def _advance_locked(self):
+        """Continue the plan after an arrival. Caller must hold self._plan_lock."""
+        self._waiting = None
+        for message in self._run_pending():
+            if message:
+                self.event_q.put(("assistant", message))
+
+    def _zone_match(self, got, name):
+        if got == name:
+            return True
+        return self._normalize_zone(got) == self._normalize_zone(name)
 
     @staticmethod
     def _is_parking_slot(zone):
         return str(zone or "").lower().startswith("slot")
 
-    def _normalize_parsed(self, parsed):
-        action = str(parsed.get("action") or "none").strip()
+    def _normalize_plan(self, parsed):
+        raw_steps = parsed.get("steps")
+        if not isinstance(raw_steps, list):
+            # Tolerate a legacy single-object response.
+            raw_steps = [parsed] if parsed.get("action") is not None else []
+        steps = [self._normalize_step(step) for step in raw_steps if isinstance(step, dict)]
+        steps = [step for step in steps if step["action"] != "none"]
+        if not steps:
+            steps = [{"action": "none", "zone": None, "lane": "default"}]
+        return {"steps": steps, "reason": str(parsed.get("reason") or "")}
+
+    def _normalize_step(self, step):
+        action = str(step.get("action") or "none").strip()
         if action not in {
             "drive_to_zone",
             "drive_direct",
@@ -331,18 +452,13 @@ class ChatGuiNode(Node):
             "none",
         }:
             action = "none"
-        lane = str(parsed.get("lane") or "default").strip().lower()
+        lane = str(step.get("lane") or "default").strip().lower()
         if lane not in {"lane1", "lane2"}:
             lane = "default"
-        zone = parsed.get("zone")
+        zone = step.get("zone")
         if zone is not None:
             zone = self._normalize_zone(str(zone).strip())
-        return {
-            "action": action,
-            "zone": zone,
-            "lane": lane,
-            "reason": str(parsed.get("reason") or ""),
-        }
+        return {"action": action, "zone": zone, "lane": lane}
 
     def _normalize_zone(self, zone):
         if zone in self.zones:
@@ -496,7 +612,7 @@ class ChatGuiWindow:
             self.status_text.set(self._debug_text(extra=f"error: {error}"))
             self._append("error", f"Error: {error}")
             return
-        response = self.node.dispatch(parsed)
+        response = self.node.dispatch_plan(parsed)
         compact = json.dumps(parsed, ensure_ascii=False, sort_keys=True)
         self.status_text.set(self._debug_text(latency=latency))
         self._append("assistant", f"Action: {response}")
@@ -632,6 +748,12 @@ class ChatGuiWindow:
     def _drain_status(self):
         try:
             while True:
+                tag, message = self.node.event_q.get_nowait()
+                self._append(tag, f"Action: {message}" if tag == "assistant" else message)
+        except queue.Empty:
+            pass
+        try:
+            while True:
                 status = self.node.status_q.get_nowait()
                 self._append("system", "Status: " + status)
                 self.status_text.set(self._debug_text(status=status))
@@ -641,11 +763,14 @@ class ChatGuiWindow:
 
     def _debug_text(self, latency=None, status=None, extra=None):
         parsed = self.node.last_parsed or {}
+        steps = parsed.get("steps") or []
+        if steps:
+            steps_text = " -> ".join(self._step_label(step) for step in steps)
+        else:
+            steps_text = "-"
         lines = [
             f"Model: {MODEL}",
-            f"Action: {parsed.get('action', '-')}",
-            f"Zone: {parsed.get('zone', '-')}",
-            f"Lane: {parsed.get('lane', '-')}",
+            f"Steps: {steps_text}",
             f"Reason: {parsed.get('reason', '-')}",
             f"Dispatch: {self.node.last_dispatch}",
         ]
@@ -656,6 +781,18 @@ class ChatGuiWindow:
         if extra:
             lines.append(str(extra))
         return "\n".join(lines)
+
+    @staticmethod
+    def _step_label(step):
+        action = step.get("action", "?")
+        zone = step.get("zone")
+        lane = step.get("lane")
+        parts = [action]
+        if zone:
+            parts.append(str(zone))
+        if lane and lane != "default":
+            parts.append(str(lane))
+        return ":".join(parts)
 
     def _append(self, tag, text):
         self.log.configure(state=tk.NORMAL)
