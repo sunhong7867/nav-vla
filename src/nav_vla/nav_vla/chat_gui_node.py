@@ -34,6 +34,11 @@ from rclpy.qos import QoSReliabilityPolicy
 from std_msgs.msg import String
 
 try:
+    from nav_vla.action_policy_model import ActionPolicyPredictor
+except ImportError:
+    ActionPolicyPredictor = None
+
+try:
     import sounddevice as sd
 except ImportError:
     sd = None
@@ -50,6 +55,9 @@ WHISPER_MODEL = os.environ.get("NAV_VLA_WHISPER_MODEL", "base")
 DEFAULT_MAP_PATH = os.path.expanduser(
     "~/ROS2_project/nav-vla/src/nav_vla/config/zone_map.yaml"
 )
+DEFAULT_ACTION_POLICY_CKPT = os.path.expanduser(
+    "~/ROS2_project/nav-vla/src/nav_vla/train/checkpoints/action_policy.pt"
+)
 ZONE_ALIASES = {
     "t1": "T1/M1",
     "m1": "T1/M1",
@@ -61,6 +69,15 @@ ZONE_ALIASES = {
     "crosswalkstop": "crosswalk_stop",
     "crosswalk_stop": "crosswalk_stop",
     "횡단보도": "crosswalk_stop",
+}
+DIRECT_ONLY_ZONES = {
+    "IN",
+    "OUT(통과직전)",
+    "OUT(통과직후)",
+    "Slot1",
+    "Slot2",
+    "Slot3",
+    "Slot4",
 }
 
 SYSTEM_TEMPLATE = """You are a ROS 2 driving-command interpreter for a small track car.
@@ -99,16 +116,24 @@ Guidelines:
 - If the user says change lane without specifying lane1/lane2, use the opposite
   of the current lane from the context. If current_lane=lane2, return lane=lane1.
   If current_lane=lane1, return lane=lane2.
+- Do NOT change lanes just because the user says "lane", "through lane",
+  "차선따라", or "차선으로". If the user asks to go to a zone by lane but does
+  not explicitly say lane1/lane2/1차선/2차선, use lane=default so the current
+  lane is kept.
 - Treat "start line", "start 선", and "출발선" as the Start zone when the user says
   stop at, go to, or drive to that line.
 - For commands like "1차선 따라 T2까지 가", one step: drive_to_zone, zone=T2, lane=lane1.
 - For commands like "stop at M3", "M3에서 멈춰", "M3까지 가서 정지",
   "go to M3 and stop", or "stop at crosswalk", one step: drive_to_zone with that zone.
 - Do not infer a lane from a zone name, target name, or the word "line".
+- Do not infer a lane from the word "lane" alone.
 - "line", "기준선", "재위치선", and "stop line" mean a target zone/line, not lane1.
 - For commands like "go M2 line", one step: drive_to_zone, zone=M2, lane=default.
 - For commands like "차선 무시하고 M3로 가", "최단거리로 M3", or "direct to M3",
   one step: drive_direct, zone=M3, lane=default.
+- IN, OUT(통과직전), OUT(통과직후), and Slot1~Slot4 are inside the track/parking
+  area, not lane-follow targets. For these zones, use drive_direct unless the
+  user is only asking a question.
 - For commands like "2차선으로 변경", one step: change_lane, lane=lane2, zone=null.
 - Treat T1, M1, and T1/M1 as the same zone. Return zone=T1/M1 for all three.
 - Treat crosswalk and 횡단보도 as crosswalk_stop. Return zone=crosswalk_stop.
@@ -163,6 +188,12 @@ class ChatGuiNode(Node):
             "ollama_host", "http://localhost:11434"
         ).value.rstrip("/")
         self.timeout = float(self.declare_parameter("timeout", 30.0).value)
+        self.parser_backend = str(
+            self.declare_parameter("parser_backend", "llm").value
+        ).strip().lower()
+        self.action_policy_ckpt = self.declare_parameter(
+            "action_policy_ckpt", DEFAULT_ACTION_POLICY_CKPT
+        ).value
         nav_goal_topic = self.declare_parameter("nav_goal_topic", "/nav_goal").value
         direct_nav_goal_topic = self.declare_parameter(
             "direct_nav_goal_topic", "/direct_nav_goal"
@@ -182,6 +213,11 @@ class ChatGuiNode(Node):
         self.zone_names = list(self.zones)
         self.system_prompt = SYSTEM_TEMPLATE.format(zones=self._zone_lines())
         self.current_lane = "lane2"
+        self.action_policy = None
+        if self.parser_backend == "action_policy":
+            if ActionPolicyPredictor is None:
+                raise RuntimeError("ActionPolicyPredictor import failed")
+            self.action_policy = ActionPolicyPredictor(self.action_policy_ckpt)
 
         transient_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -203,8 +239,14 @@ class ChatGuiNode(Node):
         self.create_subscription(String, status_topic, lambda msg: self._handle_status(msg.data), 10)
         self.create_subscription(String, lane_state_topic, self._lane_state_cb, transient_qos)
 
+        parser_desc = (
+            f"action_policy={self.action_policy_ckpt}"
+            if self.parser_backend == "action_policy"
+            else f"model={MODEL}"
+        )
         self.get_logger().info(
-            f"chat gui ready: model={MODEL}, zones={len(self.zone_names)}"
+            f"chat gui ready: backend={self.parser_backend}, {parser_desc}, "
+            f"zones={len(self.zone_names)}"
         )
 
     def _lane_state_cb(self, msg):
@@ -229,6 +271,14 @@ class ChatGuiNode(Node):
         return "\n".join(lines)
 
     def parse_command(self, text):
+        if self.parser_backend == "action_policy":
+            started = time.monotonic()
+            plan = self.action_policy.predict(text, self.current_lane)
+            plan["reason"] = (
+                f"action_policy confidence={plan.get('confidence', 0.0):.2f}"
+            )
+            return self._normalize_plan(plan), time.monotonic() - started, None
+
         zone_enum = self.zone_names + ["T1", "M1", None]
         step_schema = {
             "type": "object",
@@ -341,14 +391,16 @@ class ChatGuiNode(Node):
             if zone not in self.zones:
                 self.last_dispatch = f"invalid zone: {zone}"
                 return f"zone을 찾지 못했습니다: {zone}", None
-            if self._is_parking_slot(zone):
-                self.last_dispatch = f"unsupported lane goal: {zone}"
-                return f"{zone}은 주차 공간이라 차선 추종만으로는 도착할 수 없습니다. 주차 controller 단계에서 처리해야 합니다.", None
+            if self._is_direct_only_zone(zone):
+                return self._dispatch_step({
+                    "action": "drive_direct",
+                    "zone": zone,
+                    "lane": "default",
+                })
             payload = {"zone": zone}
             if lane in {"lane1", "lane2"}:
                 payload["lane"] = lane
                 self.lane_pub.publish(String(data=lane))
-            self.motion_pub.publish(String(data="start"))
             self.nav_goal_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
             lane_text = f" / {lane}" if lane in {"lane1", "lane2"} else ""
             self.last_dispatch = f"/nav_goal {payload}"
@@ -426,8 +478,8 @@ class ChatGuiNode(Node):
         return self._normalize_zone(got) == self._normalize_zone(name)
 
     @staticmethod
-    def _is_parking_slot(zone):
-        return str(zone or "").lower().startswith("slot")
+    def _is_direct_only_zone(zone):
+        return str(zone or "") in DIRECT_ONLY_ZONES
 
     def _normalize_plan(self, parsed):
         raw_steps = parsed.get("steps")
@@ -491,6 +543,10 @@ class ChatGuiWindow:
         self.voice_busy = False
         self.whisper_model = None
         self.voice_available = sd is not None and WhisperModel is not None
+        self.debug_window = None
+        self.debug_log = None
+        self.debug_lines = []
+        self.status_text = tk.StringVar(value=self._debug_text())
 
         outer = ttk.Frame(self.root, padding=14)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -502,7 +558,12 @@ class ChatGuiWindow:
             text="nav-vla Lane Chat Console",
             style="Title.TLabel",
         ).pack(anchor=tk.W)
-        ttk.Label(header, text=f"Model fixed: {MODEL}", style="Status.TLabel").pack(anchor=tk.W)
+        parser_label = (
+            "Backend: learned action_policy"
+            if node.parser_backend == "action_policy"
+            else f"Model fixed: {MODEL}"
+        )
+        ttk.Label(header, text=parser_label, style="Status.TLabel").pack(anchor=tk.W)
 
         entry_row = ttk.Frame(outer)
         entry_row.pack(fill=tk.X, pady=(0, 10))
@@ -529,19 +590,21 @@ class ChatGuiWindow:
             text="Auto send",
             variable=self.voice_auto_send,
         ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(
+            entry_row,
+            text="Debug",
+            command=self._open_debug_window,
+        ).pack(side=tk.LEFT, padx=(8, 0))
         if not self.voice_available:
             self.voice_button.config(state=tk.DISABLED)
 
         content = ttk.Frame(outer)
         content.pack(fill=tk.BOTH, expand=True)
-        content.columnconfigure(0, weight=1, uniform="panes")
-        content.columnconfigure(1, weight=1, uniform="panes")
+        content.columnconfigure(0, weight=1)
         content.rowconfigure(0, weight=1)
 
         chat_frame = ttk.LabelFrame(content, text="Conversation", padding=8)
-        debug_frame = ttk.LabelFrame(content, text="LLM Debug", padding=8)
-        chat_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        debug_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        chat_frame.grid(row=0, column=0, sticky="nsew")
 
         self.log = scrolledtext.ScrolledText(chat_frame, wrap=tk.WORD, state=tk.DISABLED)
         self.log.pack(fill=tk.BOTH, expand=True)
@@ -549,15 +612,6 @@ class ChatGuiWindow:
         self.log.tag_config("assistant", foreground="#2e7d32", font=("TkDefaultFont", 10, "bold"))
         self.log.tag_config("system", foreground="#666666")
         self.log.tag_config("error", foreground="#b00020")
-
-        self.status_text = tk.StringVar(value=self._debug_text())
-        ttk.Label(
-            debug_frame,
-            textvariable=self.status_text,
-            style="Status.TLabel",
-            justify=tk.LEFT,
-            anchor=tk.NW,
-        ).pack(fill=tk.BOTH, expand=True, anchor=tk.NW)
 
         shortcuts = ttk.Frame(outer)
         shortcuts.pack(fill=tk.X, pady=(8, 0))
@@ -574,13 +628,13 @@ class ChatGuiWindow:
                 padx=(0, 6),
             )
 
-        self._append("system", f"zones: {', '.join(node.zone_names)}")
-        self._append("system", "예: 'M3로 가', '2차선 따라서 crosswalk_stop까지 가', '1차선으로 변경', '정지'")
+        self._append_debug(f"zones: {', '.join(node.zone_names)}")
+        self._append_debug("예: 'M3로 가', '2차선 따라서 crosswalk_stop까지 가', '1차선으로 변경', '정지'")
         if self.voice_available:
-            self._append("system", f"voice ready: whisper={WHISPER_MODEL}")
-            self._append("system", "voice auto-send: on")
+            self._append_debug(f"voice ready: whisper={WHISPER_MODEL}")
+            self._append_debug("voice auto-send: on")
         else:
-            self._append("system", "voice disabled: install sounddevice and faster-whisper")
+            self._append_debug("voice disabled: install sounddevice and faster-whisper")
         self.entry.focus_set()
         self.root.after(150, self._drain_status)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -594,6 +648,7 @@ class ChatGuiWindow:
 
     def _send_text(self, text):
         self._append("user", f"User: {text}")
+        self._append_debug(f"User: {text}")
         self.send_button.config(state=tk.DISABLED)
         self.voice_button.config(state=tk.DISABLED)
         self.status_text.set(self._debug_text(extra="thinking..."))
@@ -610,13 +665,16 @@ class ChatGuiWindow:
             self.voice_button.config(state=tk.NORMAL)
         if error:
             self.status_text.set(self._debug_text(extra=f"error: {error}"))
-            self._append("error", f"Error: {error}")
+            self._append("assistant", f"Action: 오류: {error}")
+            self._append_debug(f"Error: {error}")
             return
         response = self.node.dispatch_plan(parsed)
         compact = json.dumps(parsed, ensure_ascii=False, sort_keys=True)
         self.status_text.set(self._debug_text(latency=latency))
         self._append("assistant", f"Action: {response}")
-        self._append("system", compact)
+        self._append_debug(f"Action: {response}")
+        self._append_debug(compact)
+        self._append_debug(self._debug_text(latency=latency))
 
     def _toggle_voice(self):
         if not self.voice_available or self.voice_busy:
@@ -631,7 +689,7 @@ class ChatGuiWindow:
 
         def audio_cb(indata, _frames, _time_info, status):
             if status:
-                self.root.after(0, lambda: self._append("system", f"Voice status: {status}"))
+                self.root.after(0, lambda: self._append_debug(f"Voice status: {status}"))
             self.record_frames.append(indata.copy())
 
         try:
@@ -645,14 +703,14 @@ class ChatGuiWindow:
         except Exception as exc:
             self.record_stream = None
             self.record_frames = []
-            self._append("error", f"Voice error: {exc}")
+            self._append_debug(f"Voice error: {exc}")
             return
 
         self.recording = True
         self.voice_button.config(text="Stop voice")
         self.send_button.config(state=tk.DISABLED)
         self.status_text.set(self._debug_text(extra="recording voice..."))
-        self._append("system", "Voice: recording started")
+        self._append_debug("Voice: recording started")
 
     def _stop_voice_recording(self):
         stream = self.record_stream
@@ -666,7 +724,7 @@ class ChatGuiWindow:
                 stream.stop()
                 stream.close()
             except Exception as exc:
-                self._append("error", f"Voice stop error: {exc}")
+                self._append_debug(f"Voice stop error: {exc}")
 
         frames = list(self.record_frames)
         self.record_frames = []
@@ -732,16 +790,16 @@ class ChatGuiWindow:
         self.send_button.config(state=tk.NORMAL)
         if error:
             self.status_text.set(self._debug_text(extra=f"voice error: {error}"))
-            self._append("error", f"Voice error: {error}")
+            self._append_debug(f"Voice error: {error}")
             return
         if not text:
             self.status_text.set(self._debug_text(extra="voice: no speech"))
-            self._append("system", "Voice: no speech")
+            self._append_debug("Voice: no speech")
             return
         self.entry.delete(0, tk.END)
         self.entry.insert(0, text)
         self.status_text.set(self._debug_text(extra=f"voice: {text}"))
-        self._append("user", f"Voice: {text}")
+        self._append_debug(f"Voice: {text}")
         if self.voice_auto_send.get():
             self._send_text(text)
 
@@ -749,14 +807,16 @@ class ChatGuiWindow:
         try:
             while True:
                 tag, message = self.node.event_q.get_nowait()
-                self._append(tag, f"Action: {message}" if tag == "assistant" else message)
+                if tag == "assistant":
+                    self._append("assistant", f"Action: {message}")
+                self._append_debug(f"Event[{tag}]: {message}")
         except queue.Empty:
             pass
         try:
             while True:
                 status = self.node.status_q.get_nowait()
-                self._append("system", "Status: " + status)
                 self.status_text.set(self._debug_text(status=status))
+                self._append_debug("Status: " + status)
         except queue.Empty:
             pass
         self.root.after(150, self._drain_status)
@@ -768,19 +828,76 @@ class ChatGuiWindow:
             steps_text = " -> ".join(self._step_label(step) for step in steps)
         else:
             steps_text = "-"
+        parser_label = (
+            "learned action_policy"
+            if self.node.parser_backend == "action_policy"
+            else MODEL
+        )
         lines = [
-            f"Model: {MODEL}",
+            f"Parser: {parser_label}",
             f"Steps: {steps_text}",
             f"Reason: {parsed.get('reason', '-')}",
             f"Dispatch: {self.node.last_dispatch}",
         ]
         if latency is not None:
-            lines.append(f"LLM latency: {latency * 1000.0:.0f} ms")
+            lines.append(f"Parse latency: {latency * 1000.0:.0f} ms")
         if status:
             lines.append(f"Navigator status: {status}")
         if extra:
             lines.append(str(extra))
         return "\n".join(lines)
+
+    def _open_debug_window(self):
+        if self.debug_window is not None and self.debug_window.winfo_exists():
+            self.debug_window.lift()
+            return
+
+        self.debug_window = tk.Toplevel(self.root)
+        self.debug_window.title("nav-vla Debug")
+        self.debug_window.geometry("820x520")
+        self.debug_window.minsize(560, 360)
+        self.debug_window.protocol("WM_DELETE_WINDOW", self._close_debug_window)
+
+        outer = ttk.Frame(self.debug_window, padding=10)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            outer,
+            textvariable=self.status_text,
+            style="Status.TLabel",
+            justify=tk.LEFT,
+            anchor=tk.NW,
+        ).pack(fill=tk.X, anchor=tk.NW, pady=(0, 8))
+
+        self.debug_log = scrolledtext.ScrolledText(
+            outer,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+        )
+        self.debug_log.pack(fill=tk.BOTH, expand=True)
+        for line in self.debug_lines:
+            self._write_debug_line(line)
+
+    def _close_debug_window(self):
+        if self.debug_window is not None:
+            self.debug_window.destroy()
+        self.debug_window = None
+        self.debug_log = None
+
+    def _append_debug(self, text):
+        line = str(text)
+        self.debug_lines.append(line)
+        if len(self.debug_lines) > 1000:
+            self.debug_lines = self.debug_lines[-1000:]
+        self._write_debug_line(line)
+
+    def _write_debug_line(self, line):
+        if self.debug_log is None:
+            return
+        self.debug_log.configure(state=tk.NORMAL)
+        self.debug_log.insert(tk.END, str(line) + "\n")
+        self.debug_log.see(tk.END)
+        self.debug_log.configure(state=tk.DISABLED)
 
     @staticmethod
     def _step_label(step):
@@ -801,6 +918,10 @@ class ChatGuiWindow:
         self.log.configure(state=tk.DISABLED)
 
     def close(self):
+        if self.debug_window is not None and self.debug_window.winfo_exists():
+            self.debug_window.destroy()
+            self.debug_window = None
+            self.debug_log = None
         if self.record_stream is not None:
             try:
                 self.record_stream.stop()

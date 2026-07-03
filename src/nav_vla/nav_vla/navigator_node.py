@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import time
 
 import rclpy
 import yaml
@@ -42,6 +43,9 @@ from nav_vla.gz_pose import WorldPoseStream, query_world_pose, resolve_gz_bin
 DEFAULT_MAP_PATH = os.path.expanduser(
     "~/ROS2_project/nav-vla/src/nav_vla/config/zone_map.yaml"
 )
+DEFAULT_ZONE_LOG_DIR = os.path.expanduser(
+    "~/ROS2_project/nav-vla/src/nav_vla/data/zone_logs"
+)
 VALID_LANES = {"lane1", "lane2"}
 ZONE_ALIASES = {
     "t1": "T1/M1",
@@ -57,6 +61,9 @@ ZONE_ALIASES = {
 }
 MAX_STEERING_COMMAND = 7
 MAX_MAPPED_YAW_RATE = 0.6458
+AREA_STOP_ZONES = {"crosswalk_stop"}
+AREA_FALLBACK_ZONES = {"T1/M1"}
+TARGET_YAW_STOP_LINE_ZONES = {"T3"}
 
 
 def wrap(angle):
@@ -77,6 +84,15 @@ class NavigatorNode(Node):
         )
         self.model_name = self.declare_parameter("model_name", "ego_vehicle").value
         self.gz_bin = resolve_gz_bin(self.declare_parameter("gz_bin", "").value)
+        self.zone_log_dir = self.declare_parameter(
+            "zone_log_dir", DEFAULT_ZONE_LOG_DIR
+        ).value
+        self.zone_log_enabled = bool(
+            self.declare_parameter("zone_log_enabled", True).value
+        )
+        self.zone_log_session = time.strftime("%Y%m%d_%H%M%S")
+        if self.zone_log_enabled:
+            os.makedirs(self.zone_log_dir, exist_ok=True)
 
         goal_topic = self.declare_parameter("goal_topic", "/nav_goal").value
         direct_goal_topic = self.declare_parameter(
@@ -117,7 +133,13 @@ class NavigatorNode(Node):
             self.declare_parameter("stop_line_arm_radius", 8.0).value
         )
         self.stop_line_lateral_radius = float(
-            self.declare_parameter("stop_line_lateral_radius", 4.0).value
+            self.declare_parameter("stop_line_lateral_radius", 8.0).value
+        )
+        self.area_arrival_radius = float(
+            self.declare_parameter("area_arrival_radius", 2.0).value
+        )
+        self.area_fallback_radius = float(
+            self.declare_parameter("area_fallback_radius", 3.0).value
         )
         self.stop_line_early_margin = float(
             self.declare_parameter("stop_line_early_margin", 0.0).value
@@ -254,16 +276,27 @@ class NavigatorNode(Node):
         self.stop_line_pass_margin = float(
             self.get_parameter("stop_line_pass_margin").value
         )
-        stop_offset = float(zone.get("stop_offset", self.default_stop_offset))
+        lane_name = self._resolve_goal_lane(lane_name)
+        lane_config = self._lane_config_for_zone(zone, lane_name)
+        stop_offset = float(
+            lane_config.get("stop_offset", zone.get("stop_offset", self.default_stop_offset))
+        )
         target_x = float(pose.get("x", 0.0))
         target_y = float(pose.get("y", 0.0))
         target_yaw = float(pose.get("yaw", 0.0))
         travel_yaw = self._travel_yaw_for_zone(
             zone_name, target_x, target_y, target_yaw
         )
-        stop_x = target_x - math.cos(travel_yaw) * stop_offset
-        stop_y = target_y - math.sin(travel_yaw) * stop_offset
-        lane_name = self._resolve_goal_lane(lane_name)
+        line_yaw = self._line_yaw_for_zone(zone_name, zone, travel_yaw, target_yaw)
+        arrival_mode = str(
+            zone.get("arrival_mode", self._arrival_mode_for_zone(zone_name))
+        ).strip()
+        if arrival_mode == "area":
+            stop_x = target_x
+            stop_y = target_y
+        else:
+            stop_x = target_x - math.cos(travel_yaw) * stop_offset
+            stop_y = target_y - math.sin(travel_yaw) * stop_offset
         self.avoidance_preferred = lane_name
         self.avoidance_other = self._opposite_lane(lane_name)
         self._reset_obstacle_avoidance()
@@ -277,9 +310,41 @@ class NavigatorNode(Node):
             "target_x": target_x,
             "target_y": target_y,
             "yaw": travel_yaw,
+            "line_yaw": line_yaw,
             "target_yaw": target_yaw,
             "stop_offset": stop_offset,
             "travel_yaw": travel_yaw,
+            "arrival_mode": arrival_mode,
+            "area_radius": float(
+                lane_config.get("area_radius", zone.get("area_radius", self.area_arrival_radius))
+            ),
+            "area_fallback_radius": float(
+                lane_config.get(
+                    "area_fallback_radius",
+                    zone.get("area_fallback_radius", self.area_fallback_radius),
+                )
+            ),
+            "area_fallback": bool(
+                lane_config.get("area_fallback", zone.get("area_fallback", False))
+            ) or zone_name in AREA_FALLBACK_ZONES,
+            "stop_line_arm_radius": float(
+                lane_config.get(
+                    "stop_line_arm_radius",
+                    zone.get("stop_line_arm_radius", self.stop_line_arm_radius),
+                )
+            ),
+            "stop_line_lateral_radius": float(
+                lane_config.get(
+                    "stop_line_lateral_radius",
+                    zone.get("stop_line_lateral_radius", self.stop_line_lateral_radius),
+                )
+            ),
+            "stop_line_pass_margin": float(
+                lane_config.get(
+                    "stop_line_pass_margin",
+                    zone.get("stop_line_pass_margin", self.stop_line_pass_margin),
+                )
+            ),
             "closest_dist": None,
             "entered_pass_radius": False,
             "tol_pos": max(
@@ -290,9 +355,30 @@ class NavigatorNode(Node):
         self.arrival_started_at = None
         self._publish_lane(lane_name)
         self._publish_motion("start")
+        self._log_zone_event(
+            zone_name,
+            "start",
+            {
+                "mode": "lane",
+                "lane": lane_name,
+                "arrival_mode": arrival_mode,
+                "target": {"x": target_x, "y": target_y, "yaw": target_yaw},
+                "stop": {"x": stop_x, "y": stop_y},
+                "stop_offset": stop_offset,
+                "travel_yaw": travel_yaw,
+                "line_yaw": line_yaw,
+                "area_radius": self.goal["area_radius"],
+                "area_fallback_radius": self.goal["area_fallback_radius"],
+                "stop_line_arm_radius": self.goal["stop_line_arm_radius"],
+                "stop_line_lateral_radius": self.goal["stop_line_lateral_radius"],
+                "stop_line_pass_margin": self.goal["stop_line_pass_margin"],
+            },
+        )
         self._status(
             f"moving: {zone_name} via {lane_name} "
+            f"mode={arrival_mode} "
             f"stop_offset={stop_offset:.2f} travel_yaw={travel_yaw:.2f} "
+            f"line_yaw={line_yaw:.2f} "
             f"stop=({stop_x:.2f},{stop_y:.2f}) "
             f"target=({target_x:.2f},{target_y:.2f})"
         )
@@ -322,6 +408,15 @@ class NavigatorNode(Node):
         }
         self._publish_motion("stop")
         self._publish_direct_motion(0, 0)
+        self._log_zone_event(
+            zone_name,
+            "direct_start",
+            {
+                "mode": "direct",
+                "target": {"x": self.direct_goal["x"], "y": self.direct_goal["y"]},
+                "tol_pos": self.direct_goal["tol_pos"],
+            },
+        )
         self._status(f"direct moving: {zone_name}")
 
     def _tick(self):
@@ -384,24 +479,81 @@ class NavigatorNode(Node):
 
         x, y, _yaw = pose
         dist = math.hypot(self.goal["x"] - x, self.goal["y"] - y)
-        crossed_stop_line, signed_to_stop, lateral_to_stop = self._stop_line_state(
-            x, y, self.goal
-        )
         closest = self.goal.get("closest_dist")
         if closest is None or dist < closest:
             closest = dist
             self.goal["closest_dist"] = dist
+        signed_to_stop = 0.0
+        lateral_to_stop = dist
+        crossed_stop_line = False
+        inside_area = False
+        if self.goal.get("arrival_mode") == "area":
+            inside_area = (
+                dist <= self.goal["area_radius"]
+                or (
+                    closest is not None
+                    and closest <= self.goal["area_radius"] + 0.3
+                    and dist > closest + 0.5
+                )
+            )
+        else:
+            crossed_stop_line, signed_to_stop, lateral_to_stop = self._stop_line_state(
+                x, y, self.goal
+            )
+            if self.goal.get("area_fallback"):
+                inside_area = (
+                    dist <= self.goal["area_fallback_radius"]
+                    or (
+                        closest is not None
+                        and closest <= self.goal["area_fallback_radius"]
+                        and dist > closest + 0.5
+                    )
+                )
         if self.timer_count % 20 == 1:
+            self._log_zone_event(
+                self.goal["name"],
+                "progress",
+                {
+                    "mode": "lane",
+                    "lane": self.goal["lane"],
+                    "arrival_mode": self.goal["arrival_mode"],
+                    "pose": {"x": x, "y": y},
+                    "target": {
+                        "x": self.goal["target_x"],
+                        "y": self.goal["target_y"],
+                    },
+                    "stop": {"x": self.goal["x"], "y": self.goal["y"]},
+                    "dist": dist,
+                    "signed_to_stop": signed_to_stop,
+                    "lateral_to_stop": lateral_to_stop,
+                    "closest_dist": closest,
+                    "inside_area": inside_area,
+                    "crossed_stop_line": crossed_stop_line,
+                    "stop_offset": self.goal["stop_offset"],
+                    "area_radius": self.goal["area_radius"],
+                    "area_fallback_radius": self.goal["area_fallback_radius"],
+                    "stop_line_arm_radius": self.goal["stop_line_arm_radius"],
+                    "stop_line_lateral_radius": self.goal["stop_line_lateral_radius"],
+                    "stop_line_pass_margin": self.goal["stop_line_pass_margin"],
+                },
+            )
             self._status(
                 f"moving: {self.goal['name']} via {self.goal['lane']} "
+                f"mode={self.goal['arrival_mode']} "
                 f"dist={dist:.2f} tol={self.goal['tol_pos']:.2f} "
                 f"line={signed_to_stop:.2f}/{lateral_to_stop:.2f} "
-                f"line_stop>={self.stop_line_pass_margin:.2f} "
+                f"line_stop>={self.goal['stop_line_pass_margin']:.2f} "
+                f"arm_max={self.goal['stop_line_arm_radius']:.2f} "
+                f"lat_max={self.goal['stop_line_lateral_radius']:.2f} "
+                f"area={self.goal['area_radius']:.2f} "
+                f"fallback={self.goal['area_fallback_radius']:.2f} "
                 f"closest={closest:.2f} offset={self.goal['stop_offset']:.2f}"
             )
         now = self.get_clock().now().nanoseconds * 1e-9
         arrival_reason = None
-        if crossed_stop_line:
+        if inside_area:
+            arrival_reason = "area"
+        elif crossed_stop_line:
             arrival_reason = "stop_line"
 
         if arrival_reason is not None:
@@ -415,6 +567,20 @@ class NavigatorNode(Node):
                 self.mode = "idle"
                 self.arrival_started_at = None
                 self._publish_motion("stop")
+                self._log_zone_event(
+                    name,
+                    "arrived",
+                    {
+                        "mode": "lane",
+                        "reason": arrival_reason,
+                        "pose": {"x": x, "y": y},
+                        "target": {"x": target_x, "y": target_y},
+                        "dist": dist,
+                        "signed_to_stop": signed_to_stop,
+                        "lateral_to_stop": lateral_to_stop,
+                        "closest_dist": closest,
+                    },
+                )
                 self._status(
                     f"arrived: {name} reason={arrival_reason} "
                     f"pose=({x:.2f},{y:.2f}) "
@@ -439,6 +605,17 @@ class NavigatorNode(Node):
         dy = goal["y"] - y
         dist = math.hypot(dx, dy)
         if self.timer_count % 20 == 1:
+            self._log_zone_event(
+                goal["name"],
+                "direct_progress",
+                {
+                    "mode": "direct",
+                    "pose": {"x": x, "y": y, "yaw": yaw},
+                    "target": {"x": goal["x"], "y": goal["y"]},
+                    "dist": dist,
+                    "tol_pos": goal["tol_pos"],
+                },
+            )
             self._status(
                 f"direct moving: {goal['name']} dist={dist:.2f} "
                 f"tol={goal['tol_pos']:.2f}"
@@ -449,6 +626,17 @@ class NavigatorNode(Node):
             self.direct_goal = None
             self.mode = "idle"
             self._publish_direct_motion(0, 0)
+            self._log_zone_event(
+                name,
+                "direct_arrived",
+                {
+                    "mode": "direct",
+                    "pose": {"x": x, "y": y, "yaw": yaw},
+                    "target": {"x": goal["x"], "y": goal["y"]},
+                    "dist": dist,
+                    "tol_pos": goal["tol_pos"],
+                },
+            )
             self._status(f"direct arrived: {name}")
             return
 
@@ -476,19 +664,43 @@ class NavigatorNode(Node):
         self._publish_direct_motion(steering, raw_speed)
 
     def _stop_line_state(self, x, y, goal):
-        hx = math.cos(goal["yaw"])
-        hy = math.sin(goal["yaw"])
+        line_yaw = goal.get("line_yaw", goal["yaw"])
+        hx = math.cos(line_yaw)
+        hy = math.sin(line_yaw)
         dx = x - goal["x"]
         dy = y - goal["y"]
         signed_to_stop = dx * hx + dy * hy
         lateral_to_stop = abs(dx * -hy + dy * hx)
         dist_to_stop = math.hypot(dx, dy)
         armed = (
-            dist_to_stop <= self.stop_line_arm_radius
-            and lateral_to_stop <= self.stop_line_lateral_radius
+            dist_to_stop <= goal["stop_line_arm_radius"]
+            and lateral_to_stop <= goal["stop_line_lateral_radius"]
         )
-        crossed = armed and signed_to_stop >= self.stop_line_pass_margin
+        crossed = armed and signed_to_stop >= goal["stop_line_pass_margin"]
         return crossed, signed_to_stop, lateral_to_stop
+
+    def _line_yaw_for_zone(self, zone_name, zone, travel_yaw, target_yaw):
+        line_source = str(zone.get("line_yaw_source", "")).strip().lower()
+        if line_source == "target":
+            return target_yaw
+        if line_source == "travel":
+            return travel_yaw
+        if zone_name in TARGET_YAW_STOP_LINE_ZONES:
+            return target_yaw
+        return travel_yaw
+
+    def _arrival_mode_for_zone(self, zone_name):
+        if zone_name in AREA_STOP_ZONES:
+            return "area"
+        return "line"
+
+    @staticmethod
+    def _lane_config_for_zone(zone, lane_name):
+        configs = zone.get("lane_overrides", {})
+        if not isinstance(configs, dict):
+            return {}
+        config = configs.get(lane_name, {})
+        return config if isinstance(config, dict) else {}
 
     def _parse_goal(self, raw):
         text = str(raw or "").strip()
@@ -539,6 +751,18 @@ class NavigatorNode(Node):
         return self._normalize_zone(text), False
 
     def _cancel(self, reason):
+        if self.goal is not None:
+            self._log_zone_event(
+                self.goal["name"],
+                "cancel",
+                {"mode": "lane", "reason": reason, "lane": self.goal["lane"]},
+            )
+        if self.direct_goal is not None:
+            self._log_zone_event(
+                self.direct_goal["name"],
+                "direct_cancel",
+                {"mode": "direct", "reason": reason},
+            )
         self.mode = "idle"
         self.goal = None
         self.direct_goal = None
@@ -583,6 +807,33 @@ class NavigatorNode(Node):
     def _status(self, text):
         self.status_pub.publish(String(data=text))
         self.get_logger().info(text)
+
+    def _log_zone_event(self, zone_name, event, fields):
+        if not self.zone_log_enabled or not zone_name:
+            return
+        record = {
+            "t": round(time.time(), 3),
+            "session": self.zone_log_session,
+            "zone": zone_name,
+            "event": event,
+        }
+        record.update(self._round_for_log(fields))
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(zone_name)).strip("_")
+        path = os.path.join(self.zone_log_dir, f"{safe_name or 'zone'}.jsonl")
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            self.get_logger().warn(f"failed to write zone log {path}: {exc}")
+
+    def _round_for_log(self, value):
+        if isinstance(value, float):
+            return round(value, 4)
+        if isinstance(value, dict):
+            return {k: self._round_for_log(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._round_for_log(v) for v in value]
+        return value
 
     def _now(self):
         return self.get_clock().now().nanoseconds * 1e-9

@@ -1,0 +1,17 @@
+{
+  "samples": 567,
+  "path": "src/nav_vla/data_actions/session_20260702_215055/samples.jsonl",
+  "categories": {
+    "lane_goal_default": 128,
+    "lane_change_explicit": 14,
+    "direct_goal": 150,
+    "direct_only_zone": 42,
+    "question_none": 24,
+    "lane_goal_explicit": 160,
+    "waypoint_then_lane_goal": 16,
+    "stop": 8,
+    "lane_change_opposite": 10,
+    "lane_waypoint_then_direct": 7,
+    "start": 8
+  }
+}

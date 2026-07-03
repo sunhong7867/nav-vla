@@ -91,11 +91,6 @@ class SimpleTrackDriverNode(Node):
         self.timer_period = 0.05
         self.timer = self.create_timer(self.timer_period, self.control_loop)
 
-        # Odom published by the current Gazebo Sim setup behaves like a local
-        # frame starting at the spawn pose, so we define the lane2 map in world
-        # coordinates and convert it once into the spawn-relative odom frame.
-        self.spawn_world_xy = (3.3728675842285156, 24.594280242919915)
-        self.spawn_world_yaw = -1.570739951736
         self.position = (0.0, 0.0)
         self.yaw = 0.0
         self.current_speed = 0.0
@@ -104,9 +99,9 @@ class SimpleTrackDriverNode(Node):
         self.closest_index = 0
         self.loop_count = 0
 
-        # Approximate lane2 centerline in world coordinates. This intentionally
-        # stays on lane2 through the crosswalk/intersection areas instead of
-        # relying on camera lane detections that disappear on the painted gaps.
+        # Approximate lane2 centerline in the /odom frame. The current Gazebo
+        # bridge publishes odometry in world-like coordinates, so these points
+        # should not be transformed into a spawn-relative local frame.
         lane2_world = [
             (3.37, 24.59),
             (3.20, 16.60),
@@ -124,11 +119,7 @@ class SimpleTrackDriverNode(Node):
             (13.80, 23.80),
             (6.20, 24.70),
         ]
-        lane2_local = [
-            world_to_local(point, self.spawn_world_xy, self.spawn_world_yaw)
-            for point in lane2_world
-        ]
-        self.path_points = densify_loop(lane2_local, spacing=0.35)
+        self.path_points = densify_loop(lane2_world, spacing=0.35)
 
         self.base_speed = 1.05
         self.min_speed = 0.40
