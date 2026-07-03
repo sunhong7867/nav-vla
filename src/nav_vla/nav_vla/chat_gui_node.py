@@ -597,6 +597,15 @@ class ChatGuiNode(Node):
 
     def _alpamayo_judgment_text(self):
         self._maybe_request_alpamayo()
+        if self.alpamayo_last_text.strip():
+            return self.alpamayo_last_text.strip()
+        if self.alpamayo_last_error:
+            return f"Alpamayo 응답을 기다리는 중입니다. 현재 연결 상태: {self.alpamayo_last_error}"
+        if not self.alpamayo_endpoint:
+            return "Alpamayo endpoint가 설정되지 않았습니다."
+        return "Alpamayo가 현재 장면을 분석하는 중입니다."
+
+    def alpamayo_debug_text(self):
         header = [
             "Alpamayo Teacher",
             f"- model: {self.alpamayo_model_id}",
@@ -1084,6 +1093,8 @@ class ChatGuiWindow:
         self.voice_available = sd is not None and WhisperModel is not None
         self.debug_window = None
         self.debug_log = None
+        self.vla_debug_window = None
+        self.vla_debug_log = None
         self.debug_lines = []
         self.status_text = tk.StringVar(value=self._debug_text())
 
@@ -1133,6 +1144,11 @@ class ChatGuiWindow:
             entry_row,
             text="Debug",
             command=self._open_debug_window,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(
+            entry_row,
+            text="VLA Debug",
+            command=self._open_vla_debug_window,
         ).pack(side=tk.LEFT, padx=(8, 0))
         if not self.voice_available:
             self.voice_button.config(state=tk.DISABLED)
@@ -1365,6 +1381,7 @@ class ChatGuiWindow:
         self.vla_text.delete("1.0", tk.END)
         self.vla_text.insert(tk.END, text)
         self.vla_text.configure(state=tk.DISABLED)
+        self._refresh_vla_debug_window()
         self.root.after(500, self._refresh_vla_panel)
 
     def _debug_text(self, latency=None, status=None, extra=None):
@@ -1430,6 +1447,42 @@ class ChatGuiWindow:
         self.debug_window = None
         self.debug_log = None
 
+    def _open_vla_debug_window(self):
+        if self.vla_debug_window is not None and self.vla_debug_window.winfo_exists():
+            self.vla_debug_window.lift()
+            return
+
+        self.vla_debug_window = tk.Toplevel(self.root)
+        self.vla_debug_window.title("nav-vla VLA Debug")
+        self.vla_debug_window.geometry("920x640")
+        self.vla_debug_window.minsize(620, 420)
+        self.vla_debug_window.protocol("WM_DELETE_WINDOW", self._close_vla_debug_window)
+
+        outer = ttk.Frame(self.vla_debug_window, padding=10)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        self.vla_debug_log = scrolledtext.ScrolledText(
+            outer,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+        )
+        self.vla_debug_log.pack(fill=tk.BOTH, expand=True)
+        self._refresh_vla_debug_window()
+
+    def _close_vla_debug_window(self):
+        if self.vla_debug_window is not None:
+            self.vla_debug_window.destroy()
+        self.vla_debug_window = None
+        self.vla_debug_log = None
+
+    def _refresh_vla_debug_window(self):
+        if self.vla_debug_log is None:
+            return
+        self.vla_debug_log.configure(state=tk.NORMAL)
+        self.vla_debug_log.delete("1.0", tk.END)
+        self.vla_debug_log.insert(tk.END, self.node.alpamayo_debug_text())
+        self.vla_debug_log.configure(state=tk.DISABLED)
+
     def _append_debug(self, text):
         line = str(text)
         self.debug_lines.append(line)
@@ -1468,6 +1521,10 @@ class ChatGuiWindow:
             self.debug_window.destroy()
             self.debug_window = None
             self.debug_log = None
+        if self.vla_debug_window is not None and self.vla_debug_window.winfo_exists():
+            self.vla_debug_window.destroy()
+            self.vla_debug_window = None
+            self.vla_debug_log = None
         if self.record_stream is not None:
             try:
                 self.record_stream.stop()

@@ -38,6 +38,7 @@ venv/
 # nav-vla data-engine episode recordings (frames + jsonl)
 /src/nav_vla/data/
 /src/nav_vla/data_obstacle/
+/src/nav_vla/logs/
 /src/nav_vla/train/checkpoints/
 
 # Model weights are intentionally not uploaded to GitHub.
