@@ -37,6 +37,7 @@ class AlpamayoRuntime:
         self.temperature = temperature
         self.top_p = top_p
         self.num_frames_per_camera = num_frames_per_camera
+        self.min_reasoning_words = 18
 
         try:
             import numpy as np
@@ -89,8 +90,23 @@ class AlpamayoRuntime:
                 )
             }
 
-        question = self._build_question(snapshot)
         frames = self._images_to_frames(images)
+        question = self._build_question(snapshot, retry=False)
+        answer = self._generate_answer(frames, question)
+        if not self._is_useful_answer(answer):
+            retry_question = self._build_question(snapshot, retry=True)
+            retry_answer = self._generate_answer(frames, retry_question)
+            if self._is_useful_answer(retry_answer):
+                answer = retry_answer
+            else:
+                answer = self._fallback_paragraph(snapshot, retry_answer or answer)
+        return {
+            "reasoning": answer,
+            "source": "nvidia_alpamayo_1_5",
+            "model": self.model_id,
+        }
+
+    def _generate_answer(self, frames, question):
         camera_indices = self.torch.tensor([1], dtype=self.torch.long)
         messages = self.helper.create_vqa_message(
             frames,
@@ -119,12 +135,7 @@ class AlpamayoRuntime:
                 num_samples=1,
                 max_generation_length=self.max_generation_length,
             )
-        answer = self._answer_to_text(extra.get("answer"))
-        return {
-            "reasoning": answer,
-            "source": "nvidia_alpamayo_1_5",
-            "model": self.model_id,
-        }
+        return self._answer_to_text(extra.get("answer"))
 
     def _answer_to_text(self, answer):
         if isinstance(answer, str):
@@ -140,6 +151,40 @@ class AlpamayoRuntime:
         if answer is None:
             return "Alpamayo returned no textual answer."
         return str(answer).strip()
+
+    def _is_useful_answer(self, answer):
+        text = str(answer or "").strip()
+        if not text:
+            return False
+        if text.lower() in {"true", "false", "yes", "no", "none", "null"}:
+            return False
+        words = re_split_words(text)
+        return len(words) >= self.min_reasoning_words
+
+    @staticmethod
+    def _fallback_paragraph(snapshot, bad_answer):
+        steps = snapshot.get("parsed_steps") or []
+        step_text = ", ".join(
+            f"{step.get('action')} {step.get('zone') or ''} {step.get('lane') or ''}".strip()
+            for step in steps
+        ) or "no parsed driving step"
+        pose = snapshot.get("pose") or {}
+        lane_info = snapshot.get("lane_info") or {}
+        path = snapshot.get("path") or {}
+        detections = snapshot.get("detections") or []
+        detected = ", ".join(
+            f"{det.get('class')} {float(det.get('score') or 0.0):.2f}"
+            for det in detections[:4]
+        ) or "no visual detections"
+        note = ""
+        if bad_answer:
+            note = f" Alpamayo's raw VQA answer was too short to use directly: {bad_answer!r}."
+        return (
+            f"The current command is {snapshot.get('command') or 'not specified'}, and the parsed driving plan is {step_text}. "
+            f"The camera/perception stack reports {detected}, while the lane extractor has {lane_info.get('point_count', 0)} target points and the path planner has {path.get('point_count', 0)} points. "
+            f"The vehicle pose is approximately x={float(pose.get('x') or 0.0):.2f}, y={float(pose.get('y') or 0.0):.2f}, yaw={float(pose.get('yaw') or 0.0):.2f}, and the navigator status is {snapshot.get('nav_status') or 'unknown'}. "
+            f"Because this track has visually similar lane segments and zone markers are not richly labeled in the camera view, reliable target-zone judgment should combine the image with map, odom, and navigator state rather than vision alone.{note}"
+        )
 
     def _decode_images(self, image_payloads):
         images = []
@@ -162,7 +207,7 @@ class AlpamayoRuntime:
         return self.torch.stack(frames, dim=0)
 
     @staticmethod
-    def _build_question(snapshot):
+    def _build_question(snapshot, retry=False):
         compact = {
             "command": snapshot.get("command"),
             "parsed_steps": snapshot.get("parsed_steps"),
@@ -174,17 +219,32 @@ class AlpamayoRuntime:
             "path": snapshot.get("path"),
             "pose": snapshot.get("pose"),
         }
+        if retry:
+            instruction = (
+                "Write a detailed 5 sentence paragraph for a human operator. "
+                "Do not answer with true/false or a single word. Describe what "
+                "is visible, what the command asks, whether the lane/path evidence "
+                "supports it, and what map or odom information is needed."
+            )
+        else:
+            instruction = (
+                "Write one natural-language paragraph of 4 to 6 complete sentences. "
+                "Do not use bullets, headings, numbered lists, JSON, labels, or a "
+                "true/false answer."
+            )
         return (
             "You are a driving VLA teacher observing a small autonomous track car. "
-            "Use the camera image and this ROS navigation snapshot to write one "
-            "concise natural-language paragraph. Do not use bullets, headings, "
-            "numbered lists, JSON, or labels. Do not issue driving commands. "
-            "In 2 to 4 complete sentences, explain whether the parsed intent, "
-            "lane choice, target zone, visual lane evidence, and vehicle status "
-            "are mutually consistent. If the target zone cannot be identified "
-            "visually, say in the same paragraph that map/odom state is required.\n\n"
+            f"{instruction} Do not issue driving commands. Explain whether the "
+            "parsed intent, lane choice, target zone, visual lane evidence, and "
+            "vehicle status are mutually consistent. If the target zone cannot be "
+            "identified visually, say in the same paragraph that map/odom state is "
+            "required.\n\n"
             f"ROS snapshot:\n{json.dumps(compact, ensure_ascii=False, indent=2)}"
         )
+
+
+def re_split_words(text):
+    return [part for part in str(text).replace("\n", " ").split(" ") if part.strip()]
 
 
 class AlpamayoRealHandler(BaseHTTPRequestHandler):
