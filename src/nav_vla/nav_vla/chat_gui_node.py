@@ -606,11 +606,22 @@ class ChatGuiNode(Node):
         return "Alpamayo가 현재 장면을 분석하는 중입니다."
 
     def alpamayo_debug_text(self):
+        image_status = "no fresh image"
+        image_payload = self._fresh(
+            self.latest_alpamayo_image,
+            self.latest_alpamayo_image_time,
+        )
+        if image_payload:
+            image_status = (
+                f"{image_payload.get('width')}x{image_payload.get('height')} "
+                f"{image_payload.get('encoding')} from {image_payload.get('topic_encoding')}"
+            )
         header = [
             "Alpamayo Teacher",
             f"- model: {self.alpamayo_model_id}",
             f"- repo: {ALPAMAYO_REPO_URL}",
             f"- weights: {ALPAMAYO_HF_URL}",
+            f"- image payload: {image_status}",
         ]
         if not self.alpamayo_endpoint:
             header.extend([
@@ -684,6 +695,15 @@ class ChatGuiNode(Node):
             self.alpamayo_last_error = ""
             self.alpamayo_last_stamp = time.monotonic()
             self._log_alpamayo_response(snapshot, teacher_text, teacher_payload)
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = ""
+            if body:
+                self.alpamayo_last_error = f"HTTP {exc.code}: {body[:1200]}"
+            else:
+                self.alpamayo_last_error = str(exc)
         except Exception as exc:  # Keep GUI alive even if the external teacher is down.
             self.alpamayo_last_error = str(exc)
         finally:

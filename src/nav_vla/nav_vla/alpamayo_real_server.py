@@ -10,6 +10,7 @@ import argparse
 import base64
 import io
 import json
+import traceback
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 
@@ -203,7 +204,14 @@ class AlpamayoRealHandler(BaseHTTPRequestHandler):
             result = self.runtime.judge(payload)
             self._send_json(200, {"ok": True, **result})
         except Exception as exc:
-            self._send_json(500, {"ok": False, "error": str(exc)})
+            self._send_json(
+                500,
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                },
+            )
 
 
 def main():
