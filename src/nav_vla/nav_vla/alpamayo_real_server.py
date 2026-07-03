@@ -119,12 +119,27 @@ class AlpamayoRuntime:
                 num_samples=1,
                 max_generation_length=self.max_generation_length,
             )
-        answer = extra["answer"][0]
+        answer = self._answer_to_text(extra.get("answer"))
         return {
             "reasoning": answer,
             "source": "nvidia_alpamayo_1_5",
             "model": self.model_id,
         }
+
+    def _answer_to_text(self, answer):
+        if isinstance(answer, str):
+            return answer.strip()
+        if isinstance(answer, bytes):
+            return answer.decode("utf-8", errors="replace").strip()
+        if hasattr(answer, "tolist"):
+            answer = answer.tolist()
+        if isinstance(answer, (list, tuple)):
+            if len(answer) == 1:
+                return self._answer_to_text(answer[0])
+            return " ".join(self._answer_to_text(item) for item in answer).strip()
+        if answer is None:
+            return "Alpamayo returned no textual answer."
+        return str(answer).strip()
 
     def _decode_images(self, image_payloads):
         images = []
