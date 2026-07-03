@@ -100,12 +100,13 @@ class AlpamayoRuntime:
             if self._is_useful_answer(retry_answer):
                 answer = retry_answer
             else:
-                answer = self._short_answer_notice(retry_answer or answer)
+                answer = retry_answer or answer
         return {
             "reasoning": answer,
             "source": "nvidia_alpamayo_1_5",
             "model": self.model_id,
             "raw_answer": raw_answer,
+            "short_answer": not self._is_useful_answer(answer),
         }
 
     def _generate_answer(self, frames, question):
@@ -162,17 +163,6 @@ class AlpamayoRuntime:
             return False
         words = re_split_words(text)
         return len(words) >= self.min_reasoning_words
-
-    @staticmethod
-    def _short_answer_notice(bad_answer):
-        answer = str(bad_answer or "").strip() or "(empty)"
-        return (
-            "Alpamayo returned a very short visual answer instead of a usable "
-            f"scene analysis: {answer!r}. This means the current prompt/image pair "
-            "did not elicit reliable vision-language reasoning, so this sample "
-            "should be treated as low quality rather than expanded with ROS-state "
-            "fallback text."
-        )
 
     def _decode_images(self, image_payloads):
         images = []
