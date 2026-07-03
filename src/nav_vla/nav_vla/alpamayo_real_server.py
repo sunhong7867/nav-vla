@@ -160,12 +160,13 @@ class AlpamayoRuntime:
         }
         return (
             "You are a driving VLA teacher observing a small autonomous track car. "
-            "Use the camera image and this ROS navigation snapshot to produce a "
-            "concise Chain-of-Causation style judgment. Do not issue commands. "
-            "Check whether the parsed intent, lane choice, target zone, visual "
-            "lane evidence, and vehicle status are mutually consistent. "
-            "If the target zone cannot be identified visually, say that map/odom "
-            "state is required.\n\n"
+            "Use the camera image and this ROS navigation snapshot to write one "
+            "concise natural-language paragraph. Do not use bullets, headings, "
+            "numbered lists, JSON, or labels. Do not issue driving commands. "
+            "In 2 to 4 complete sentences, explain whether the parsed intent, "
+            "lane choice, target zone, visual lane evidence, and vehicle status "
+            "are mutually consistent. If the target zone cannot be identified "
+            "visually, say in the same paragraph that map/odom state is required.\n\n"
             f"ROS snapshot:\n{json.dumps(compact, ensure_ascii=False, indent=2)}"
         )
 

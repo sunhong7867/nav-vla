@@ -17,6 +17,8 @@ import os
 import queue
 import re
 import base64
+import csv
+import datetime as dt
 import io
 import threading
 import time
@@ -70,6 +72,9 @@ DEFAULT_MAP_PATH = os.path.expanduser(
 )
 DEFAULT_ACTION_POLICY_CKPT = os.path.expanduser(
     "~/ROS2_project/nav-vla/src/nav_vla/train/checkpoints/action_policy.pt"
+)
+DEFAULT_ALPAMAYO_LOG_DIR = os.path.expanduser(
+    "~/ROS2_project/nav-vla/src/nav_vla/logs/alpamayo"
 )
 ALPAMAYO_MODEL_ID = "nvidia/Alpamayo-1.5-10B"
 ALPAMAYO_REPO_URL = "https://github.com/NVlabs/alpamayo1.5"
@@ -256,6 +261,9 @@ class ChatGuiNode(Node):
         self.alpamayo_timeout = float(
             self.declare_parameter("alpamayo_timeout", 3.0).value
         )
+        self.alpamayo_log_dir = str(
+            self.declare_parameter("alpamayo_log_dir", DEFAULT_ALPAMAYO_LOG_DIR).value
+        ).strip()
 
         self.zones = self._load_zones()
         self.zone_names = list(self.zones)
@@ -279,6 +287,9 @@ class ChatGuiNode(Node):
         self.alpamayo_last_text = ""
         self.alpamayo_last_error = ""
         self.alpamayo_last_stamp = None
+        self.alpamayo_log_jsonl = ""
+        self.alpamayo_log_csv = ""
+        self._init_alpamayo_logs()
         self.action_policy = None
         if self.parser_backend == "action_policy":
             if ActionPolicyPredictor is None:
@@ -319,6 +330,40 @@ class ChatGuiNode(Node):
             f"chat gui ready: backend={self.parser_backend}, {parser_desc}, "
             f"vla_judgment={self.vla_judgment_backend}, zones={len(self.zone_names)}"
         )
+
+    def _init_alpamayo_logs(self):
+        if not self.alpamayo_log_dir:
+            return
+        os.makedirs(self.alpamayo_log_dir, exist_ok=True)
+        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.alpamayo_log_jsonl = os.path.join(
+            self.alpamayo_log_dir,
+            f"alpamayo_judgments_{stamp}.jsonl",
+        )
+        self.alpamayo_log_csv = os.path.join(
+            self.alpamayo_log_dir,
+            f"alpamayo_judgments_{stamp}.csv",
+        )
+        with open(self.alpamayo_log_csv, "w", encoding="utf-8", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=self._alpamayo_log_fields())
+            writer.writeheader()
+
+    @staticmethod
+    def _alpamayo_log_fields():
+        return [
+            "time",
+            "model",
+            "source",
+            "command",
+            "steps",
+            "current_lane",
+            "nav_status",
+            "dispatch",
+            "pose",
+            "image_count",
+            "reasoning",
+            "endpoint",
+        ]
 
     def _lane_state_cb(self, msg):
         try:
@@ -625,9 +670,11 @@ class ChatGuiNode(Node):
         try:
             with urllib.request.urlopen(request, timeout=self.alpamayo_timeout) as response:
                 raw = response.read().decode("utf-8", errors="replace")
-            self.alpamayo_last_text = self._extract_alpamayo_text(raw)
+            teacher_text, teacher_payload = self._extract_alpamayo_payload(raw)
+            self.alpamayo_last_text = teacher_text
             self.alpamayo_last_error = ""
             self.alpamayo_last_stamp = time.monotonic()
+            self._log_alpamayo_response(snapshot, teacher_text, teacher_payload)
         except Exception as exc:  # Keep GUI alive even if the external teacher is down.
             self.alpamayo_last_error = str(exc)
         finally:
@@ -635,13 +682,17 @@ class ChatGuiNode(Node):
 
     @staticmethod
     def _extract_alpamayo_text(raw):
+        return ChatGuiNode._extract_alpamayo_payload(raw)[0]
+
+    @staticmethod
+    def _extract_alpamayo_payload(raw):
         text = raw.strip()
         if not text:
-            return "Empty Alpamayo teacher response."
+            return "Empty Alpamayo teacher response.", {}
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            return text
+            return text, {"raw": text}
         for key in (
             "reasoning",
             "judgment",
@@ -653,8 +704,56 @@ class ChatGuiNode(Node):
         ):
             value = data.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip()
-        return json.dumps(data, ensure_ascii=False, indent=2)
+                return value.strip(), data
+        return json.dumps(data, ensure_ascii=False, indent=2), data
+
+    def _log_alpamayo_response(self, snapshot, teacher_text, teacher_payload):
+        if not self.alpamayo_log_jsonl or not self.alpamayo_log_csv:
+            return
+        now = dt.datetime.now().isoformat(timespec="seconds")
+        clean_snapshot = self._snapshot_for_log(snapshot)
+        row = {
+            "time": now,
+            "model": str(teacher_payload.get("model") or self.alpamayo_model_id),
+            "source": str(teacher_payload.get("source") or ""),
+            "command": str(clean_snapshot.get("command") or ""),
+            "steps": json.dumps(clean_snapshot.get("parsed_steps") or [], ensure_ascii=False),
+            "current_lane": str(clean_snapshot.get("current_lane") or ""),
+            "nav_status": str(clean_snapshot.get("nav_status") or ""),
+            "dispatch": str(clean_snapshot.get("last_dispatch") or ""),
+            "pose": json.dumps(clean_snapshot.get("pose") or {}, ensure_ascii=False),
+            "image_count": str(len(clean_snapshot.get("images") or [])),
+            "reasoning": teacher_text,
+            "endpoint": self.alpamayo_endpoint,
+        }
+        record = {
+            **row,
+            "snapshot": clean_snapshot,
+            "teacher_payload": teacher_payload,
+        }
+        try:
+            with open(self.alpamayo_log_jsonl, "a", encoding="utf-8") as file:
+                file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            with open(self.alpamayo_log_csv, "a", encoding="utf-8", newline="") as file:
+                writer = csv.DictWriter(file, fieldnames=self._alpamayo_log_fields())
+                writer.writerow(row)
+        except OSError as exc:
+            self.alpamayo_last_error = f"log write failed: {exc}"
+
+    @staticmethod
+    def _snapshot_for_log(snapshot):
+        clean = dict(snapshot)
+        images = []
+        for image in clean.get("images") or []:
+            images.append({
+                "encoding": image.get("encoding"),
+                "topic_encoding": image.get("topic_encoding"),
+                "width": image.get("width"),
+                "height": image.get("height"),
+                "data_bytes_base64": len(image.get("data") or ""),
+            })
+        clean["images"] = images
+        return clean
 
     def _vla_snapshot(self):
         parsed = self.last_parsed or {}
@@ -682,10 +781,13 @@ class ChatGuiNode(Node):
         return (
             "You are Alpamayo 1.5 used as a non-controlling teacher for a small "
             "ROS2 track vehicle. Review the latest camera/perception/planner "
-            "snapshot and produce a concise Chain-of-Causation style judgment. "
+            "snapshot and produce one concise natural-language paragraph. "
             "Do not command the vehicle directly. Focus on whether the parsed "
             "intent, lane choice, target zone, and current motion are consistent. "
-            "If visual evidence is insufficient, say what is missing.\n\n"
+            "Do not use bullets, headings, JSON, numbered lists, or labels. "
+            "Write 2 to 4 complete sentences as if explaining the current driving "
+            "situation to an operator. If visual evidence is insufficient, say "
+            "what is missing in the same paragraph.\n\n"
             f"Snapshot JSON:\n{json.dumps(snapshot, ensure_ascii=False, indent=2)}"
         )
 

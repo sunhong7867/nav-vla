@@ -74,6 +74,30 @@ The endpoint can return plain text or JSON with one of these fields:
 Accepted JSON keys are `reasoning`, `judgment`, `coc`,
 `chain_of_causation`, `text`, `output`, or `message`.
 
+The GUI asks Alpamayo to return a short natural-language paragraph, not a
+bullet list. Every successful teacher response is saved automatically as both
+CSV and JSONL:
+
+```text
+src/nav_vla/logs/alpamayo/alpamayo_judgments_YYYYMMDD_HHMMSS.csv
+src/nav_vla/logs/alpamayo/alpamayo_judgments_YYYYMMDD_HHMMSS.jsonl
+```
+
+The CSV file is convenient for Excel/LibreOffice. The JSONL file keeps the ROS
+snapshot and teacher payload for later distillation experiments. Camera images
+are not stored in the log; only image metadata is stored, so the log does not
+become huge.
+
+You can change the log location:
+
+```bash
+ros2 run nav_vla chat_gui_node --ros-args \
+  -p parser_backend:=action_policy \
+  -p vla_judgment_backend:=alpamayo \
+  -p alpamayo_endpoint:=http://127.0.0.1:8765/judge \
+  -p alpamayo_log_dir:=/home/sh/ROS2_project/nav-vla/src/nav_vla/logs/alpamayo
+```
+
 ## Real Alpamayo 1.5 Server
 
 Run the real model outside the ROS environment. The official Alpamayo 1.5

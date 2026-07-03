@@ -127,27 +127,14 @@ def build_reasoning(payload):
     else:
         checks.append("No visual detections are available; rely on map/odom/navigation state.")
 
-    return "\n".join(
-        [
-            "Local Alpamayo-compatible teacher adapter",
-            "This is a test endpoint, not the 10B Alpamayo model.",
-            "",
-            "Observation",
-            f"- camera: {_detection_text(detections)}",
-            f"- lane: {_lane_text(lane_info)}",
-            f"- path: {_path_text(path)}",
-            f"- pose: {_pose_text(pose)}",
-            f"- current lane: {current_lane}",
-            f"- navigator: {nav_status}",
-            "",
-            "Intent",
-            f"- command: {command}",
-            f"- parsed steps: {_step_text(steps)}",
-            f"- dispatch: {dispatch}",
-            "",
-            "Chain-of-Causation Check",
-            *[f"- {item}" for item in checks],
-        ]
+    return (
+        "This local Alpamayo-compatible test adapter is reviewing the current "
+        f"command, '{command}', which was parsed as {_step_text(steps)} while the "
+        f"vehicle is in {current_lane}. The latest state reports navigator status "
+        f"'{nav_status}', dispatch '{dispatch}', pose {_pose_text(pose)}, lane "
+        f"evidence {_lane_text(lane_info)}, path evidence {_path_text(path)}, and "
+        f"camera evidence {_detection_text(detections)}. "
+        + " ".join(checks)
     )
 
 
