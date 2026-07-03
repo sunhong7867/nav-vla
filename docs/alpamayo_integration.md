@@ -112,7 +112,13 @@ hf auth login
 Request access first:
 
 - https://huggingface.co/nvidia/Alpamayo-1.5-10B
+- https://huggingface.co/nvidia/Cosmos-Reason2-8B
 - https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles
+
+`Alpamayo-1.5-10B` can show `gated: False` while still failing on
+`Cosmos-Reason2-8B`, because Alpamayo loads Cosmos-Reason2 as its VLM backbone.
+If startup fails with `Cannot access gated repo ... Cosmos-Reason2-8B`, request
+access to that model page and retry after approval.
 
 Then start the real `/judge` server from the Alpamayo environment:
 

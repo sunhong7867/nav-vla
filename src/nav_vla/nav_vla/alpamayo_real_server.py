@@ -15,6 +15,7 @@ from http.server import ThreadingHTTPServer
 
 
 MODEL_ID = "nvidia/Alpamayo-1.5-10B"
+COSMOS_BACKBONE_ID = "nvidia/Cosmos-Reason2-8B"
 
 
 class AlpamayoRuntime:
@@ -59,7 +60,18 @@ class AlpamayoRuntime:
         if attn_implementation:
             kwargs["attn_implementation"] = attn_implementation
         print(f"loading Alpamayo model: {model_id}")
-        self.model = Alpamayo1_5.from_pretrained(model_id, **kwargs).to(device)
+        try:
+            self.model = Alpamayo1_5.from_pretrained(model_id, **kwargs).to(device)
+        except Exception as exc:
+            message = str(exc)
+            if "Cosmos-Reason2-8B" in message or "gated repo" in message.lower():
+                raise RuntimeError(
+                    "Alpamayo 1.5 loaded its config, but the Cosmos backbone is "
+                    "still gated for this Hugging Face account. Request access to "
+                    f"https://huggingface.co/{COSMOS_BACKBONE_ID}, then rerun "
+                    "`hf auth login` if needed."
+                ) from exc
+            raise
         self.model.eval()
         self.processor = helper.get_processor(self.model.tokenizer)
         print("Alpamayo model ready")
