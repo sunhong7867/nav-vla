@@ -93,17 +93,19 @@ class AlpamayoRuntime:
         frames = self._images_to_frames(images)
         question = self._build_question(snapshot, retry=False)
         answer = self._generate_answer(frames, question)
+        raw_answer = answer
         if not self._is_useful_answer(answer):
             retry_question = self._build_question(snapshot, retry=True)
             retry_answer = self._generate_answer(frames, retry_question)
             if self._is_useful_answer(retry_answer):
                 answer = retry_answer
             else:
-                answer = self._fallback_paragraph(snapshot, retry_answer or answer)
+                answer = self._short_answer_notice(retry_answer or answer)
         return {
             "reasoning": answer,
             "source": "nvidia_alpamayo_1_5",
             "model": self.model_id,
+            "raw_answer": raw_answer,
         }
 
     def _generate_answer(self, frames, question):
@@ -162,28 +164,14 @@ class AlpamayoRuntime:
         return len(words) >= self.min_reasoning_words
 
     @staticmethod
-    def _fallback_paragraph(snapshot, bad_answer):
-        steps = snapshot.get("parsed_steps") or []
-        step_text = ", ".join(
-            f"{step.get('action')} {step.get('zone') or ''} {step.get('lane') or ''}".strip()
-            for step in steps
-        ) or "no parsed driving step"
-        pose = snapshot.get("pose") or {}
-        lane_info = snapshot.get("lane_info") or {}
-        path = snapshot.get("path") or {}
-        detections = snapshot.get("detections") or []
-        detected = ", ".join(
-            f"{det.get('class')} {float(det.get('score') or 0.0):.2f}"
-            for det in detections[:4]
-        ) or "no visual detections"
-        note = ""
-        if bad_answer:
-            note = f" Alpamayo's raw VQA answer was too short to use directly: {bad_answer!r}."
+    def _short_answer_notice(bad_answer):
+        answer = str(bad_answer or "").strip() or "(empty)"
         return (
-            f"The current command is {snapshot.get('command') or 'not specified'}, and the parsed driving plan is {step_text}. "
-            f"The camera/perception stack reports {detected}, while the lane extractor has {lane_info.get('point_count', 0)} target points and the path planner has {path.get('point_count', 0)} points. "
-            f"The vehicle pose is approximately x={float(pose.get('x') or 0.0):.2f}, y={float(pose.get('y') or 0.0):.2f}, yaw={float(pose.get('yaw') or 0.0):.2f}, and the navigator status is {snapshot.get('nav_status') or 'unknown'}. "
-            f"Because this track has visually similar lane segments and zone markers are not richly labeled in the camera view, reliable target-zone judgment should combine the image with map, odom, and navigator state rather than vision alone.{note}"
+            "Alpamayo returned a very short visual answer instead of a usable "
+            f"scene analysis: {answer!r}. This means the current prompt/image pair "
+            "did not elicit reliable vision-language reasoning, so this sample "
+            "should be treated as low quality rather than expanded with ROS-state "
+            "fallback text."
         )
 
     def _decode_images(self, image_payloads):
@@ -215,31 +203,33 @@ class AlpamayoRuntime:
             "nav_status": snapshot.get("nav_status"),
             "last_dispatch": snapshot.get("last_dispatch"),
             "detections": snapshot.get("detections"),
-            "lane_info": snapshot.get("lane_info"),
-            "path": snapshot.get("path"),
-            "pose": snapshot.get("pose"),
         }
         if retry:
             instruction = (
-                "Write a detailed 5 sentence paragraph for a human operator. "
-                "Do not answer with true/false or a single word. Describe what "
-                "is visible, what the command asks, whether the lane/path evidence "
-                "supports it, and what map or odom information is needed."
+                "Write a detailed visual scene analysis for a human operator. "
+                "First describe what the image itself shows: road shape, lane "
+                "markings, curve direction, visible stop/crosswalk/parking markings "
+                "if any, and whether the vehicle appears aligned with the lane. "
+                "Then connect that visual evidence to the command. Do not answer "
+                "with true/false, a single word, or a schema."
             )
         else:
             instruction = (
-                "Write one natural-language paragraph of 4 to 6 complete sentences. "
-                "Do not use bullets, headings, numbered lists, JSON, labels, or a "
-                "true/false answer."
+                "Write one natural-language paragraph of 4 to 6 complete sentences "
+                "based primarily on the camera image. Start with what is visibly "
+                "present in the scene, such as lane markings, road curvature, "
+                "crosswalk or stop markings, parking-slot markings, nearby track "
+                "boundaries, and vehicle alignment. Use the ROS snapshot only as "
+                "secondary context for the user's command and current state."
             )
         return (
             "You are a driving VLA teacher observing a small autonomous track car. "
-            f"{instruction} Do not issue driving commands. Explain whether the "
-            "parsed intent, lane choice, target zone, visual lane evidence, and "
-            "vehicle status are mutually consistent. If the target zone cannot be "
-            "identified visually, say in the same paragraph that map/odom state is "
-            "required.\n\n"
-            f"ROS snapshot:\n{json.dumps(compact, ensure_ascii=False, indent=2)}"
+            f"{instruction} Do not issue driving commands. Do not merely repeat "
+            "numeric odometry, yaw, planner point counts, or JSON fields. If the "
+            "target zone cannot be identified visually, explicitly say that the "
+            "image does not contain enough visual evidence and that map/odom state "
+            "would be needed.\n\n"
+            f"Secondary ROS context:\n{json.dumps(compact, ensure_ascii=False, indent=2)}"
         )
 
 
