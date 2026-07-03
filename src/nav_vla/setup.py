@@ -28,6 +28,8 @@ setup(
             'track_roi_editor_node = nav_vla.track_roi_editor_node:main',
             'navigator_node = nav_vla.navigator_node:main',
             'chat_gui_node = nav_vla.chat_gui_node:main',
+            'alpamayo_teacher_server = nav_vla.alpamayo_teacher_server:main',
+            'alpamayo_real_server = nav_vla.alpamayo_real_server:main',
             'data_engine_node = nav_vla.data_engine_node:main',
             'action_sentence_generator = nav_vla.action_sentence_generator:main',
             'action_policy_node = nav_vla.action_policy_node:main',

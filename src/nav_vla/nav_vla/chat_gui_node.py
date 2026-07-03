@@ -12,9 +12,12 @@ Run with navigator_node:
 """
 
 import json
+import math
 import os
 import queue
 import re
+import base64
+import io
 import threading
 import time
 import tkinter as tk
@@ -26,12 +29,22 @@ from tkinter import ttk
 import numpy as np
 import rclpy
 import yaml
+from interfaces_pkg.msg import DetectionArray
+from interfaces_pkg.msg import LaneInfo
+from interfaces_pkg.msg import PathPlanningResult
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy
 from rclpy.qos import QoSHistoryPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import QoSReliabilityPolicy
 from std_msgs.msg import String
+from sensor_msgs.msg import Image
+
+try:
+    from PIL import Image as PILImage
+except ImportError:
+    PILImage = None
 
 try:
     from nav_vla.action_policy_model import ActionPolicyPredictor
@@ -58,6 +71,9 @@ DEFAULT_MAP_PATH = os.path.expanduser(
 DEFAULT_ACTION_POLICY_CKPT = os.path.expanduser(
     "~/ROS2_project/nav-vla/src/nav_vla/train/checkpoints/action_policy.pt"
 )
+ALPAMAYO_MODEL_ID = "nvidia/Alpamayo-1.5-10B"
+ALPAMAYO_REPO_URL = "https://github.com/NVlabs/alpamayo1.5"
+ALPAMAYO_HF_URL = "https://huggingface.co/nvidia/Alpamayo-1.5-10B"
 ZONE_ALIASES = {
     "t1": "T1/M1",
     "m1": "T1/M1",
@@ -208,11 +224,61 @@ class ChatGuiNode(Node):
         lane_state_topic = self.declare_parameter(
             "lane_state_topic", "/lane_mode_state"
         ).value
+        detection_topic = self.declare_parameter("detection_topic", "/detections").value
+        lane_info_topic = self.declare_parameter(
+            "lane_info_topic", "/yolov8_lane_info"
+        ).value
+        path_topic = self.declare_parameter(
+            "path_topic", "/path_planning_result"
+        ).value
+        odom_topic = self.declare_parameter("odom_topic", "/odom").value
+        alpamayo_image_topic = self.declare_parameter(
+            "alpamayo_image_topic", "/camera/image_raw"
+        ).value
+        self.alpamayo_image_max_width = int(
+            self.declare_parameter("alpamayo_image_max_width", 384).value
+        )
+        self.alpamayo_image_quality = int(
+            self.declare_parameter("alpamayo_image_quality", 75).value
+        )
+        self.vla_judgment_backend = str(
+            self.declare_parameter("vla_judgment_backend", "local").value
+        ).strip().lower()
+        self.alpamayo_endpoint = str(
+            self.declare_parameter("alpamayo_endpoint", "").value
+        ).strip()
+        self.alpamayo_model_id = str(
+            self.declare_parameter("alpamayo_model_id", ALPAMAYO_MODEL_ID).value
+        ).strip()
+        self.alpamayo_period = float(
+            self.declare_parameter("alpamayo_period", 2.0).value
+        )
+        self.alpamayo_timeout = float(
+            self.declare_parameter("alpamayo_timeout", 3.0).value
+        )
 
         self.zones = self._load_zones()
         self.zone_names = list(self.zones)
         self.system_prompt = SYSTEM_TEMPLATE.format(zones=self._zone_lines())
         self.current_lane = "lane2"
+        self.last_user_text = "-"
+        self.last_action_text = "-"
+        self.last_nav_status = "-"
+        self.latest_detections = []
+        self.latest_detection_time = None
+        self.latest_lane_info = None
+        self.latest_lane_info_time = None
+        self.latest_path_info = None
+        self.latest_path_time = None
+        self.latest_pose = None
+        self.latest_pose_time = None
+        self.latest_alpamayo_image = None
+        self.latest_alpamayo_image_time = None
+        self.alpamayo_busy = False
+        self.alpamayo_last_call = 0.0
+        self.alpamayo_last_text = ""
+        self.alpamayo_last_error = ""
+        self.alpamayo_last_stamp = None
         self.action_policy = None
         if self.parser_backend == "action_policy":
             if ActionPolicyPredictor is None:
@@ -238,6 +304,11 @@ class ChatGuiNode(Node):
         self._waiting = None
         self.create_subscription(String, status_topic, lambda msg: self._handle_status(msg.data), 10)
         self.create_subscription(String, lane_state_topic, self._lane_state_cb, transient_qos)
+        self.create_subscription(DetectionArray, detection_topic, self._detections_cb, 10)
+        self.create_subscription(LaneInfo, lane_info_topic, self._lane_info_cb, 10)
+        self.create_subscription(PathPlanningResult, path_topic, self._path_cb, 10)
+        self.create_subscription(Odometry, odom_topic, self._odom_cb, 10)
+        self.create_subscription(Image, alpamayo_image_topic, self._alpamayo_image_cb, 10)
 
         parser_desc = (
             f"action_policy={self.action_policy_ckpt}"
@@ -246,7 +317,7 @@ class ChatGuiNode(Node):
         )
         self.get_logger().info(
             f"chat gui ready: backend={self.parser_backend}, {parser_desc}, "
-            f"zones={len(self.zone_names)}"
+            f"vla_judgment={self.vla_judgment_backend}, zones={len(self.zone_names)}"
         )
 
     def _lane_state_cb(self, msg):
@@ -257,6 +328,96 @@ class ChatGuiNode(Node):
         lane = str(payload.get("current_lane") or "").strip().lower()
         if lane in {"lane1", "lane2"}:
             self.current_lane = lane
+
+    def _detections_cb(self, msg):
+        detections = []
+        for det in msg.detections[:12]:
+            bbox = det.bbox
+            detections.append({
+                "class": str(det.class_name or f"class_{det.class_id}"),
+                "score": float(det.score),
+                "cx": float(bbox.center.position.x),
+                "cy": float(bbox.center.position.y),
+                "w": float(bbox.size.x),
+                "h": float(bbox.size.y),
+            })
+        detections.sort(key=lambda item: item["score"], reverse=True)
+        self.latest_detections = detections
+        self.latest_detection_time = time.monotonic()
+
+    def _lane_info_cb(self, msg):
+        points = [
+            (int(point.target_x), int(point.target_y))
+            for point in msg.target_points[:5]
+        ]
+        self.latest_lane_info = {
+            "slope": float(msg.slope),
+            "points": points,
+            "point_count": len(msg.target_points),
+            "is_lane_changing": bool(msg.is_lane_changing),
+        }
+        self.latest_lane_info_time = time.monotonic()
+
+    def _path_cb(self, msg):
+        first = None
+        last = None
+        if msg.x_points and msg.y_points:
+            first = (float(msg.x_points[0]), float(msg.y_points[0]))
+            last = (float(msg.x_points[-1]), float(msg.y_points[-1]))
+        self.latest_path_info = {
+            "point_count": min(len(msg.x_points), len(msg.y_points)),
+            "first": first,
+            "last": last,
+            "is_lane_changing": bool(msg.is_lane_changing),
+        }
+        self.latest_path_time = time.monotonic()
+
+    def _odom_cb(self, msg):
+        pose = msg.pose.pose
+        q = pose.orientation
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        self.latest_pose = {
+            "x": float(pose.position.x),
+            "y": float(pose.position.y),
+            "yaw": yaw,
+            "speed": float(msg.twist.twist.linear.x),
+        }
+        self.latest_pose_time = time.monotonic()
+
+    def _alpamayo_image_cb(self, msg):
+        if PILImage is None:
+            return
+        try:
+            payload = self._image_msg_to_jpeg_payload(msg)
+        except Exception:
+            return
+        self.latest_alpamayo_image = payload
+        self.latest_alpamayo_image_time = time.monotonic()
+
+    def _image_msg_to_jpeg_payload(self, msg):
+        ch = 4 if msg.encoding in ("rgba8", "bgra8") else 3
+        arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, ch)
+        if msg.encoding in ("bgr8", "bgra8"):
+            rgb = arr[:, :, :3][:, :, ::-1]
+        else:
+            rgb = arr[:, :, :3]
+        image = PILImage.fromarray(np.ascontiguousarray(rgb))
+        if self.alpamayo_image_max_width > 0 and image.width > self.alpamayo_image_max_width:
+            scale = self.alpamayo_image_max_width / float(image.width)
+            image = image.resize(
+                (self.alpamayo_image_max_width, max(1, int(image.height * scale)))
+            )
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=self.alpamayo_image_quality)
+        return {
+            "encoding": "jpeg_base64",
+            "topic_encoding": str(msg.encoding),
+            "width": image.width,
+            "height": image.height,
+            "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+        }
 
     def _load_zones(self):
         with open(self.map_path, "r", encoding="utf-8") as file:
@@ -271,6 +432,7 @@ class ChatGuiNode(Node):
         return "\n".join(lines)
 
     def parse_command(self, text):
+        self.last_user_text = text
         if self.parser_backend == "action_policy":
             started = time.monotonic()
             plan = self.action_policy.predict(text, self.current_lane)
@@ -345,6 +507,280 @@ class ChatGuiNode(Node):
         except json.JSONDecodeError:
             return None, time.monotonic() - started, f"bad json: {content[:160]}"
         return self._normalize_plan(parsed), time.monotonic() - started, None
+
+    def vla_judgment_text(self):
+        if self.vla_judgment_backend == "alpamayo":
+            return self._alpamayo_judgment_text()
+        return self._local_vla_judgment_text()
+
+    def _local_vla_judgment_text(self):
+        parsed = self.last_parsed or {}
+        steps = parsed.get("steps") or []
+        detections = self._fresh(self.latest_detections, self.latest_detection_time, [])
+        lane_info = self._fresh(self.latest_lane_info, self.latest_lane_info_time)
+        path_info = self._fresh(self.latest_path_info, self.latest_path_time)
+        pose = self._fresh(self.latest_pose, self.latest_pose_time)
+
+        detection_text = self._detection_summary(detections)
+        lane_text = self._lane_info_summary(lane_info)
+        path_text = self._path_summary(path_info)
+        pose_text = self._pose_summary(pose)
+        step_text = self._steps_summary(steps)
+        evidence = self._evidence_summary(detections, lane_info, path_info)
+
+        lines = [
+            "VLA Judgment (CoC-lite)",
+            "",
+            "Observation",
+            f"- camera/YOLO: {detection_text}",
+            f"- lane info: {lane_text}",
+            f"- path planner: {path_text}",
+            f"- pose: {pose_text}",
+            f"- current lane: {self.current_lane}",
+            f"- navigator: {self.last_nav_status}",
+            "",
+            "Language Intent",
+            f"- command: {self.last_user_text}",
+            f"- interpreted steps: {step_text}",
+            "",
+            "Causal Check",
+            f"- perception evidence: {evidence}",
+            f"- selected dispatch: {self.last_dispatch}",
+            f"- action summary: {self.last_action_text}",
+        ]
+        return "\n".join(lines)
+
+    def _alpamayo_judgment_text(self):
+        self._maybe_request_alpamayo()
+        header = [
+            "Alpamayo Teacher",
+            f"- model: {self.alpamayo_model_id}",
+            f"- repo: {ALPAMAYO_REPO_URL}",
+            f"- weights: {ALPAMAYO_HF_URL}",
+        ]
+        if not self.alpamayo_endpoint:
+            header.extend([
+                "- status: endpoint not configured",
+                "",
+                "Run chat_gui_node with:",
+                "  -p vla_judgment_backend:=alpamayo",
+                "  -p alpamayo_endpoint:=http://127.0.0.1:8765/judge",
+                "",
+                "The endpoint should accept POST JSON:",
+                "  {model, prompt, snapshot}",
+                "and return JSON/text with a reasoning or judgment field.",
+            ])
+        else:
+            header.append(f"- endpoint: {self.alpamayo_endpoint}")
+            if self.alpamayo_last_stamp is None:
+                header.append("- status: waiting for first teacher response")
+            else:
+                age = time.monotonic() - self.alpamayo_last_stamp
+                header.append(f"- status: last response {age:.1f}s ago")
+            if self.alpamayo_last_error:
+                header.append(f"- error: {self.alpamayo_last_error}")
+
+        teacher_text = self.alpamayo_last_text.strip()
+        if not teacher_text:
+            teacher_text = "No Alpamayo teacher output yet."
+
+        return "\n".join([
+            *header,
+            "",
+            "Teacher Output",
+            teacher_text,
+            "",
+            "Local ROS Snapshot",
+            self._local_vla_judgment_text(),
+        ])
+
+    def _maybe_request_alpamayo(self):
+        if not self.alpamayo_endpoint or self.alpamayo_busy:
+            return
+        now = time.monotonic()
+        if now - self.alpamayo_last_call < max(0.5, self.alpamayo_period):
+            return
+        self.alpamayo_last_call = now
+        self.alpamayo_busy = True
+        snapshot = self._vla_snapshot()
+        prompt = self._alpamayo_prompt(snapshot)
+        threading.Thread(
+            target=self._request_alpamayo_worker,
+            args=(prompt, snapshot),
+            daemon=True,
+        ).start()
+
+    def _request_alpamayo_worker(self, prompt, snapshot):
+        payload = {
+            "model": self.alpamayo_model_id,
+            "prompt": prompt,
+            "snapshot": snapshot,
+        }
+        request = urllib.request.Request(
+            self.alpamayo_endpoint,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.alpamayo_timeout) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+            self.alpamayo_last_text = self._extract_alpamayo_text(raw)
+            self.alpamayo_last_error = ""
+            self.alpamayo_last_stamp = time.monotonic()
+        except Exception as exc:  # Keep GUI alive even if the external teacher is down.
+            self.alpamayo_last_error = str(exc)
+        finally:
+            self.alpamayo_busy = False
+
+    @staticmethod
+    def _extract_alpamayo_text(raw):
+        text = raw.strip()
+        if not text:
+            return "Empty Alpamayo teacher response."
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return text
+        for key in (
+            "reasoning",
+            "judgment",
+            "coc",
+            "chain_of_causation",
+            "text",
+            "output",
+            "message",
+        ):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return json.dumps(data, ensure_ascii=False, indent=2)
+
+    def _vla_snapshot(self):
+        parsed = self.last_parsed or {}
+        return {
+            "command": self.last_user_text,
+            "action_summary": self.last_action_text,
+            "parsed_steps": parsed.get("steps") or [],
+            "reason": parsed.get("reason", ""),
+            "current_lane": self.current_lane,
+            "nav_status": self.last_nav_status,
+            "last_dispatch": self.last_dispatch,
+            "detections": self._fresh(self.latest_detections, self.latest_detection_time, []),
+            "lane_info": self._fresh(self.latest_lane_info, self.latest_lane_info_time),
+            "path": self._fresh(self.latest_path_info, self.latest_path_time),
+            "pose": self._fresh(self.latest_pose, self.latest_pose_time),
+            "images": self._fresh(
+                [self.latest_alpamayo_image] if self.latest_alpamayo_image else [],
+                self.latest_alpamayo_image_time,
+                [],
+            ),
+            "zones": self.zone_names,
+        }
+
+    def _alpamayo_prompt(self, snapshot):
+        return (
+            "You are Alpamayo 1.5 used as a non-controlling teacher for a small "
+            "ROS2 track vehicle. Review the latest camera/perception/planner "
+            "snapshot and produce a concise Chain-of-Causation style judgment. "
+            "Do not command the vehicle directly. Focus on whether the parsed "
+            "intent, lane choice, target zone, and current motion are consistent. "
+            "If visual evidence is insufficient, say what is missing.\n\n"
+            f"Snapshot JSON:\n{json.dumps(snapshot, ensure_ascii=False, indent=2)}"
+        )
+
+    @staticmethod
+    def _fresh(value, stamp, default=None, max_age=2.5):
+        if stamp is None:
+            return default
+        if time.monotonic() - stamp > max_age:
+            return default
+        return value
+
+    @staticmethod
+    def _detection_summary(detections):
+        if not detections:
+            return "no fresh detections"
+        counts = {}
+        best = {}
+        for det in detections:
+            name = det["class"]
+            counts[name] = counts.get(name, 0) + 1
+            best[name] = max(best.get(name, 0.0), det["score"])
+        parts = [
+            f"{name} x{counts[name]} best={best[name]:.2f}"
+            for name in sorted(counts)
+        ]
+        return ", ".join(parts)
+
+    @staticmethod
+    def _lane_info_summary(lane_info):
+        if not lane_info:
+            return "no fresh lane info"
+        points = lane_info["points"]
+        point_text = ", ".join(f"({x},{y})" for x, y in points[:3]) or "-"
+        return (
+            f"slope={lane_info['slope']:.2f}, "
+            f"points={lane_info['point_count']} [{point_text}], "
+            f"changing={lane_info['is_lane_changing']}"
+        )
+
+    @staticmethod
+    def _path_summary(path_info):
+        if not path_info:
+            return "no fresh path"
+        first = path_info["first"]
+        last = path_info["last"]
+        if first is None or last is None:
+            span = "-"
+        else:
+            span = f"({first[0]:.1f},{first[1]:.1f}) -> ({last[0]:.1f},{last[1]:.1f})"
+        return (
+            f"points={path_info['point_count']}, "
+            f"changing={path_info['is_lane_changing']}, span={span}"
+        )
+
+    @staticmethod
+    def _pose_summary(pose):
+        if not pose:
+            return "no fresh odom"
+        return (
+            f"x={pose['x']:.2f}, y={pose['y']:.2f}, "
+            f"yaw={pose['yaw']:.2f}, v={pose['speed']:.2f}"
+        )
+
+    @staticmethod
+    def _steps_summary(steps):
+        if not steps:
+            return "-"
+        parts = []
+        for step in steps:
+            action = step.get("action", "?")
+            zone = step.get("zone")
+            lane = step.get("lane")
+            text = action
+            if zone:
+                text += f"({zone})"
+            if lane and lane != "default":
+                text += f"[{lane}]"
+            parts.append(text)
+        return " -> ".join(parts)
+
+    @staticmethod
+    def _evidence_summary(detections, lane_info, path_info):
+        lane_seen = any(
+            str(det.get("class", "")).lower() in {"lane1", "lane2"}
+            for det in detections or []
+        )
+        if lane_seen and lane_info and path_info:
+            return "lane markings, lane target points, and planned path are all fresh"
+        if lane_seen and lane_info:
+            return "lane markings and lane target points are fresh"
+        if lane_info or path_info:
+            return "planner/lane geometry is fresh, visual detections may be stale"
+        if detections:
+            return "visual detections are fresh, planner/lane geometry may be stale"
+        return "waiting for fresh camera/perception/planner data"
 
     def dispatch_plan(self, plan):
         """Queue an ordered plan and dispatch steps up to the first blocking drive.
@@ -443,6 +879,7 @@ class ChatGuiNode(Node):
     def _handle_status(self, text):
         """Forward navigator status to the GUI and advance the plan queue when the
         drive we were waiting on completes (or is cancelled)."""
+        self.last_nav_status = text
         self.status_q.put(text)
         with self._plan_lock:
             waiting = self._waiting
@@ -600,11 +1037,14 @@ class ChatGuiWindow:
 
         content = ttk.Frame(outer)
         content.pack(fill=tk.BOTH, expand=True)
-        content.columnconfigure(0, weight=1)
+        content.columnconfigure(0, weight=1, uniform="main")
+        content.columnconfigure(1, weight=1, uniform="main")
         content.rowconfigure(0, weight=1)
 
         chat_frame = ttk.LabelFrame(content, text="Conversation", padding=8)
-        chat_frame.grid(row=0, column=0, sticky="nsew")
+        vla_frame = ttk.LabelFrame(content, text="VLA Judgment", padding=8)
+        chat_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        vla_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
         self.log = scrolledtext.ScrolledText(chat_frame, wrap=tk.WORD, state=tk.DISABLED)
         self.log.pack(fill=tk.BOTH, expand=True)
@@ -613,20 +1053,13 @@ class ChatGuiWindow:
         self.log.tag_config("system", foreground="#666666")
         self.log.tag_config("error", foreground="#b00020")
 
-        shortcuts = ttk.Frame(outer)
-        shortcuts.pack(fill=tk.X, pady=(8, 0))
-        for label, text in [
-            ("Stop", "정지"),
-            ("Start", "출발"),
-            ("Lane 1", "1차선으로 변경"),
-            ("Lane 2", "2차선으로 변경"),
-            ("M3", "M3로 가"),
-            ("Lane2 M3", "2차선 따라서 M3로 가"),
-        ]:
-            ttk.Button(shortcuts, text=label, command=lambda value=text: self._send_text(value)).pack(
-                side=tk.LEFT,
-                padx=(0, 6),
-            )
+        self.vla_text = scrolledtext.ScrolledText(
+            vla_frame,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            height=12,
+        )
+        self.vla_text.pack(fill=tk.BOTH, expand=True)
 
         self._append_debug(f"zones: {', '.join(node.zone_names)}")
         self._append_debug("예: 'M3로 가', '2차선 따라서 crosswalk_stop까지 가', '1차선으로 변경', '정지'")
@@ -637,6 +1070,7 @@ class ChatGuiWindow:
             self._append_debug("voice disabled: install sounddevice and faster-whisper")
         self.entry.focus_set()
         self.root.after(150, self._drain_status)
+        self.root.after(250, self._refresh_vla_panel)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def _send(self):
@@ -669,6 +1103,7 @@ class ChatGuiWindow:
             self._append_debug(f"Error: {error}")
             return
         response = self.node.dispatch_plan(parsed)
+        self.node.last_action_text = response
         compact = json.dumps(parsed, ensure_ascii=False, sort_keys=True)
         self.status_text.set(self._debug_text(latency=latency))
         self._append("assistant", f"Action: {response}")
@@ -809,6 +1244,7 @@ class ChatGuiWindow:
                 tag, message = self.node.event_q.get_nowait()
                 if tag == "assistant":
                     self._append("assistant", f"Action: {message}")
+                    self.node.last_action_text = message
                 self._append_debug(f"Event[{tag}]: {message}")
         except queue.Empty:
             pass
@@ -820,6 +1256,14 @@ class ChatGuiWindow:
         except queue.Empty:
             pass
         self.root.after(150, self._drain_status)
+
+    def _refresh_vla_panel(self):
+        text = self.node.vla_judgment_text()
+        self.vla_text.configure(state=tk.NORMAL)
+        self.vla_text.delete("1.0", tk.END)
+        self.vla_text.insert(tk.END, text)
+        self.vla_text.configure(state=tk.DISABLED)
+        self.root.after(500, self._refresh_vla_panel)
 
     def _debug_text(self, latency=None, status=None, extra=None):
         parsed = self.node.last_parsed or {}
