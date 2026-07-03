@@ -186,37 +186,12 @@ class AlpamayoRuntime:
 
     @staticmethod
     def _build_question(snapshot, retry=False):
-        command_context = {
-            "command": snapshot.get("command"),
-            "parsed_steps": snapshot.get("parsed_steps"),
-            "current_lane": snapshot.get("current_lane"),
-            "nav_status": snapshot.get("nav_status"),
-        }
         if retry:
             return (
-                "Describe the driving scene in the image in full sentences. "
-                "This is not a yes/no question. Do not answer True, False, Yes, or No. "
-                "Write a paragraph with at least four sentences. Mention the road shape, "
-                "lane markings, whether the road curves left or right, visible crosswalk "
-                "or stop-line markings if present, parking-slot markings if present, "
-                "track boundaries, and whether the vehicle appears centered or drifting. "
-                "If those objects are not visible, explicitly say they are not visible. "
-                "End with one sentence about what additional map or odometry information "
-                "would be needed to identify a named target zone."
+                "What are the key traffic elements visible in this scene and how "
+                "should they influence driving behavior? Answer in full sentences."
             )
-        return (
-            "Describe the camera image for a human operator supervising a small "
-            "autonomous track car. This is an open-ended scene-description task, "
-            "not a yes/no task. Do not answer True, False, Yes, No, null, or a "
-            "single word. Write one paragraph of 4 to 6 complete sentences. "
-            "Start by describing only what is visible in the image: road shape, "
-            "lane markings, curve direction, crosswalk or stop-line markings, "
-            "parking-slot markings, track boundaries, and vehicle alignment. "
-            "Then use this command context only in the final sentence to say whether "
-            "the visible image alone is enough to support the requested navigation "
-            "intent, or whether map/odom state is needed.\n\n"
-            f"Command context:\n{json.dumps(command_context, ensure_ascii=False, indent=2)}"
-        )
+        return "Describe the scene."
 
 
 def re_split_words(text):
