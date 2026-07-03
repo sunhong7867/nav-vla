@@ -186,40 +186,36 @@ class AlpamayoRuntime:
 
     @staticmethod
     def _build_question(snapshot, retry=False):
-        compact = {
+        command_context = {
             "command": snapshot.get("command"),
             "parsed_steps": snapshot.get("parsed_steps"),
             "current_lane": snapshot.get("current_lane"),
             "nav_status": snapshot.get("nav_status"),
-            "last_dispatch": snapshot.get("last_dispatch"),
-            "detections": snapshot.get("detections"),
         }
         if retry:
-            instruction = (
-                "Write a detailed visual scene analysis for a human operator. "
-                "First describe what the image itself shows: road shape, lane "
-                "markings, curve direction, visible stop/crosswalk/parking markings "
-                "if any, and whether the vehicle appears aligned with the lane. "
-                "Then connect that visual evidence to the command. Do not answer "
-                "with true/false, a single word, or a schema."
-            )
-        else:
-            instruction = (
-                "Write one natural-language paragraph of 4 to 6 complete sentences "
-                "based primarily on the camera image. Start with what is visibly "
-                "present in the scene, such as lane markings, road curvature, "
-                "crosswalk or stop markings, parking-slot markings, nearby track "
-                "boundaries, and vehicle alignment. Use the ROS snapshot only as "
-                "secondary context for the user's command and current state."
+            return (
+                "Describe the driving scene in the image in full sentences. "
+                "This is not a yes/no question. Do not answer True, False, Yes, or No. "
+                "Write a paragraph with at least four sentences. Mention the road shape, "
+                "lane markings, whether the road curves left or right, visible crosswalk "
+                "or stop-line markings if present, parking-slot markings if present, "
+                "track boundaries, and whether the vehicle appears centered or drifting. "
+                "If those objects are not visible, explicitly say they are not visible. "
+                "End with one sentence about what additional map or odometry information "
+                "would be needed to identify a named target zone."
             )
         return (
-            "You are a driving VLA teacher observing a small autonomous track car. "
-            f"{instruction} Do not issue driving commands. Do not merely repeat "
-            "numeric odometry, yaw, planner point counts, or JSON fields. If the "
-            "target zone cannot be identified visually, explicitly say that the "
-            "image does not contain enough visual evidence and that map/odom state "
-            "would be needed.\n\n"
-            f"Secondary ROS context:\n{json.dumps(compact, ensure_ascii=False, indent=2)}"
+            "Describe the camera image for a human operator supervising a small "
+            "autonomous track car. This is an open-ended scene-description task, "
+            "not a yes/no task. Do not answer True, False, Yes, No, null, or a "
+            "single word. Write one paragraph of 4 to 6 complete sentences. "
+            "Start by describing only what is visible in the image: road shape, "
+            "lane markings, curve direction, crosswalk or stop-line markings, "
+            "parking-slot markings, track boundaries, and vehicle alignment. "
+            "Then use this command context only in the final sentence to say whether "
+            "the visible image alone is enough to support the requested navigation "
+            "intent, or whether map/odom state is needed.\n\n"
+            f"Command context:\n{json.dumps(command_context, ensure_ascii=False, indent=2)}"
         )
 
 
