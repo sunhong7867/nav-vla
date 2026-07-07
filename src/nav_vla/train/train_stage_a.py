@@ -40,6 +40,7 @@ DIRECT_ONLY_ZONES = {
     "Slot4",
 }
 LANE_VOCAB = {"default": 0, "lane1": 1, "lane2": 2, "direct": 3}
+TASK_VOCAB = {"drive_to_zone": 0, "direct": 1, "cruise": 2}
 STATE_DIM = 5
 POS_SCALE = 50.0
 
@@ -61,6 +62,16 @@ def lane_index(meta, record, nav_mode):
         return LANE_VOCAB["direct"]
     lane = str(record.get("goal_lane") or meta.get("goal_lane") or "default")
     return LANE_VOCAB.get(lane, LANE_VOCAB["default"])
+
+
+def task_index(meta, record):
+    task = str(record.get("task_type") or meta.get("task_type") or "").strip().lower()
+    mode = str(meta.get("nav_mode") or "").strip().lower()
+    if task == "cruise" or mode == "cruise":
+        return TASK_VOCAB["cruise"]
+    if mode == "direct":
+        return TASK_VOCAB["direct"]
+    return TASK_VOCAB["drive_to_zone"]
 
 
 def is_lane_changing_record(record):
@@ -119,28 +130,30 @@ def scan_episodes(data_root, vocab, success_only=True, nav_mode="lane", sessions
             continue
         if nav_mode != "all" and meta.get("nav_mode", "lane") != nav_mode:
             continue
-        zname = meta.get("goal_zone")
-        if zname not in vocab:
-            continue
-        if nav_mode == "lane" and zname in DIRECT_ONLY_ZONES:
-            continue
-        zidx = vocab[zname]
         sp = os.path.join(ep, "steps.jsonl")
         if not os.path.exists(sp):
             continue
         samples = []
         for line in open(sp):
             r = json.loads(line)
+            zname = r.get("goal_zone") or meta.get("goal_zone")
+            if zname not in vocab:
+                continue
+            if nav_mode == "lane" and zname in DIRECT_ONLY_ZONES:
+                continue
+            zidx = vocab[zname]
             if drop_lane_changes and is_lane_changing_record(r):
                 dropped_lc += 1
                 continue
             img = os.path.join(ep, r["image"])
             if os.path.exists(img):
                 lidx = lane_index(meta, r, nav_mode)
+                tidx = task_index(meta, r)
                 samples.append((
                     img,
                     zidx,
                     lidx,
+                    tidx,
                     state_features(r),
                     r["cmd"]["linear"],
                     r["cmd"]["angular"],
@@ -171,11 +184,11 @@ class EpisodeDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, i):
-        path, zidx, lidx, state, lin, ang = self.samples[i]
+        path, zidx, lidx, tidx, state, lin, ang = self.samples[i]
         img = self.tf(Image.open(path).convert("RGB"))
         state = torch.tensor(state, dtype=torch.float32)
         action = torch.tensor([lin / LIN_SCALE, ang / ANG_SCALE], dtype=torch.float32)
-        return img, zidx, lidx, state, action
+        return img, zidx, lidx, tidx, state, action
 
 
 class VisionGoalPolicy(nn.Module):
@@ -183,6 +196,7 @@ class VisionGoalPolicy(nn.Module):
         self,
         n_zones,
         n_lanes=len(LANE_VOCAB),
+        n_tasks=len(TASK_VOCAB),
         emb=32,
         state_dim=STATE_DIM,
         pretrained=False,
@@ -193,17 +207,19 @@ class VisionGoalPolicy(nn.Module):
         self.backbone = nn.Sequential(*list(bb.children())[:-1])  # -> (B,512,1,1)
         self.zone_emb = nn.Embedding(n_zones, emb)
         self.lane_emb = nn.Embedding(n_lanes, 8)
+        self.task_emb = nn.Embedding(n_tasks, 8)
         self.head = nn.Sequential(
-            nn.Linear(512 + emb + 8 + state_dim, 256), nn.ReLU(),
+            nn.Linear(512 + emb + 8 + 8 + state_dim, 256), nn.ReLU(),
             nn.Linear(256, 64), nn.ReLU(),
             nn.Linear(64, 2),
         )
 
-    def forward(self, img, zidx, lidx, state):
+    def forward(self, img, zidx, lidx, tidx, state):
         f = self.backbone(img).flatten(1)
         z = self.zone_emb(zidx)
         lane = self.lane_emb(lidx)
-        return self.head(torch.cat([f, z, lane, state], dim=1))
+        task = self.task_emb(tidx)
+        return self.head(torch.cat([f, z, lane, task, state], dim=1))
 
 
 def main():
@@ -275,14 +291,15 @@ def main():
     for ep in range(args.epochs):
         model.train()
         tloss = 0.0
-        for img, z, lane, state, a in tl:
+        for img, z, lane, task, state, a in tl:
             img = img.to(dev)
             z = z.to(dev)
             lane = lane.to(dev)
+            task = task.to(dev)
             state = state.to(dev)
             a = a.to(dev)
             opt.zero_grad()
-            loss = lossf(model(img, z, lane, state), a)
+            loss = lossf(model(img, z, lane, task, state), a)
             loss.backward(); opt.step()
             tloss += loss.item() * img.size(0)
         tloss /= len(train_samples)
@@ -291,13 +308,14 @@ def main():
         vloss = 0.0
         mae_lin = mae_ang = 0.0
         with torch.no_grad():
-            for img, z, lane, state, a in vl:
+            for img, z, lane, task, state, a in vl:
                 img = img.to(dev)
                 z = z.to(dev)
                 lane = lane.to(dev)
+                task = task.to(dev)
                 state = state.to(dev)
                 a = a.to(dev)
-                p = model(img, z, lane, state)
+                p = model(img, z, lane, task, state)
                 vloss += lossf(p, a).item() * img.size(0)
                 err = (p - a).abs().mean(0)
                 mae_lin += err[0].item() * img.size(0)
@@ -310,6 +328,7 @@ def main():
             best = vloss
             torch.save({"model": model.state_dict(), "vocab": vocab,
                         "lane_vocab": LANE_VOCAB,
+                        "task_vocab": TASK_VOCAB,
                         "state_dim": STATE_DIM, "pos_scale": POS_SCALE,
                         "img": args.img, "lin_scale": LIN_SCALE, "ang_scale": ANG_SCALE},
                        os.path.join(OUT_DIR, "stage_a.pt"))

@@ -102,6 +102,7 @@ DIRECT_ONLY_ZONES = {
     "Slot3",
     "Slot4",
 }
+TRACK_CRUISE_ZONES = ("M2", "T2", "M3", "T3", "T4", "Start")
 # Words that mean "come to a halt". Used to tell a standalone stop apart from a
 # positional "stop at <zone>" (drive there, then stop).
 STOP_WORD_RE = re.compile(r"stop|halt|pause|정지|멈춰|멈추|세워|세우", re.IGNORECASE)
@@ -114,6 +115,12 @@ CHANGE_LANE_RE = re.compile(
 )
 LANE1_RE = re.compile(r"lane\s*1|1\s*차선|first lane|inner lane|left lane", re.IGNORECASE)
 LANE2_RE = re.compile(r"lane\s*2|2\s*차선|second lane|outer lane|right lane", re.IGNORECASE)
+DIRECT_DRIVE_RE = re.compile(r"direct|shortest|차선\s*무시|최단", re.IGNORECASE)
+DRIVE_TO_RE = re.compile(r"\b(go|drive|move|navigate)\b|가|이동|주행", re.IGNORECASE)
+STANDALONE_DRIVE_RE = re.compile(
+    r"^\s*(go|drive|start|resume|continue|출발|주행|가|계속\s*가)\s*$",
+    re.IGNORECASE,
+)
 # Explicit phrases that name the Start line as a target. Bare "start" is left out
 # on purpose: it collides with the start verb ("start driving").
 START_LINE_PHRASES = (
@@ -243,8 +250,8 @@ class ChatGuiNode(Node):
         self.action_policy_ckpt = self.declare_parameter(
             "action_policy_ckpt", DEFAULT_ACTION_POLICY_CKPT
         ).value
-        nav_goal_topic = self.declare_parameter("nav_goal_topic", "/nav_goal").value
-        direct_nav_goal_topic = self.declare_parameter(
+        self.nav_goal_topic = self.declare_parameter("nav_goal_topic", "/nav_goal").value
+        self.direct_nav_goal_topic = self.declare_parameter(
             "direct_nav_goal_topic", "/direct_nav_goal"
         ).value
         lane_command_topic = self.declare_parameter(
@@ -300,10 +307,17 @@ class ChatGuiNode(Node):
         self.zone_names = list(self.zones)
         self._zone_text_patterns = self._build_zone_text_patterns()
         self.system_prompt = SYSTEM_TEMPLATE.format(zones=self._zone_lines())
+        self.policy_goal_mode = (
+            "policy" in str(self.nav_goal_topic)
+            or "policy" in str(self.direct_nav_goal_topic)
+            or "policy" in str(status_topic)
+        )
         self.current_lane = "lane2"
         self.last_user_text = "-"
         self.last_action_text = "-"
         self.last_nav_status = "-"
+        self.last_drive_step = None
+        self.last_arrived_zone = None
         self.latest_detections = []
         self.latest_detection_time = None
         self.latest_lane_info = None
@@ -335,8 +349,8 @@ class ChatGuiNode(Node):
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             depth=1,
         )
-        self.nav_goal_pub = self.create_publisher(String, nav_goal_topic, 10)
-        self.direct_goal_pub = self.create_publisher(String, direct_nav_goal_topic, 10)
+        self.nav_goal_pub = self.create_publisher(String, self.nav_goal_topic, 10)
+        self.direct_goal_pub = self.create_publisher(String, self.direct_nav_goal_topic, 10)
         self.lane_pub = self.create_publisher(String, lane_command_topic, transient_qos)
         self.motion_pub = self.create_publisher(String, motion_control_topic, transient_qos)
         self.status_q = queue.Queue()
@@ -523,6 +537,9 @@ class ChatGuiNode(Node):
 
     def parse_command(self, text):
         self.last_user_text = text
+        shortcut = self._deterministic_drive_plan(text)
+        if shortcut is not None:
+            return shortcut, 0.0, None
         if self.parser_backend == "action_policy":
             started = time.monotonic()
             plan = self.action_policy.predict(text, self.current_lane)
@@ -597,6 +614,30 @@ class ChatGuiNode(Node):
         except json.JSONDecodeError:
             return None, time.monotonic() - started, f"bad json: {content[:160]}"
         return self._normalize_plan(parsed), time.monotonic() - started, None
+
+    def _deterministic_drive_plan(self, text):
+        """Handle simple destination commands without letting the LLM invent lanes."""
+        if STANDALONE_DRIVE_RE.search(text or ""):
+            return self._normalize_plan({
+                "steps": [{"action": "start", "zone": None, "lane": "default"}],
+                "reason": "deterministic cruise command",
+            })
+        if not (DRIVE_TO_RE.search(text) or DIRECT_DRIVE_RE.search(text)):
+            return None
+        if CHANGE_LANE_RE.search(text) or STOP_WORD_RE.search(text):
+            return None
+        zone = self._match_zone_in_text(text)
+        if zone is None and re.search(r"\b(go|drive|move|navigate)\s+start\b", text, re.IGNORECASE):
+            zone = "Start"
+        if zone not in self.zones:
+            return None
+        lane = self._explicit_lane_from_text(text) or "default"
+        action = "drive_direct" if DIRECT_DRIVE_RE.search(text) else "drive_to_zone"
+        plan = {
+            "steps": [{"action": action, "zone": zone, "lane": lane}],
+            "reason": "deterministic simple destination command",
+        }
+        return self._normalize_plan(plan)
 
     def vla_judgment_text(self):
         if self.vla_judgment_backend == "alpamayo":
@@ -1009,7 +1050,7 @@ class ChatGuiNode(Node):
             self._waiting = None
             messages = self._run_pending()
         summary = " / ".join(m for m in messages if m)
-        return summary or "처리할 수 있는 주행 명령을 찾지 못했습니다."
+        return summary or "No actionable driving command was found."
 
     def _run_pending(self):
         """Dispatch queued steps until a drive step starts (and we must wait for
@@ -1039,7 +1080,7 @@ class ChatGuiNode(Node):
         if action == "drive_to_zone":
             if zone not in self.zones:
                 self.last_dispatch = f"invalid zone: {zone}"
-                return f"zone을 찾지 못했습니다: {zone}", None
+                return f"Unknown zone: {zone}", None
             if self._is_direct_only_zone(zone):
                 return self._dispatch_step({
                     "action": "drive_direct",
@@ -1052,42 +1093,90 @@ class ChatGuiNode(Node):
                 self.lane_pub.publish(String(data=lane))
             self.nav_goal_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
             lane_text = f" / {lane}" if lane in {"lane1", "lane2"} else ""
-            self.last_dispatch = f"/nav_goal {payload}"
-            return f"{zone}{lane_text} 목표로 이동합니다.", ("zone", zone)
+            self.last_drive_step = {
+                "action": "drive_to_zone",
+                "zone": zone,
+                "lane": lane if lane in {"lane1", "lane2"} else "default",
+            }
+            self.last_dispatch = f"{self.nav_goal_topic} {payload}"
+            return f"Driving to {zone}{lane_text}.", ("zone", zone)
 
         if action == "drive_direct":
             if zone not in self.zones:
                 self.last_dispatch = f"invalid direct zone: {zone}"
-                return f"zone을 찾지 못했습니다: {zone}", None
+                return f"Unknown zone: {zone}", None
             self.nav_goal_pub.publish(String(data="stop"))
             self.motion_pub.publish(String(data="stop"))
             self.direct_goal_pub.publish(String(data=zone))
-            self.last_dispatch = f"/direct_nav_goal {zone}"
-            return f"차선을 무시하고 {zone}까지 직접 이동합니다.", ("direct", zone)
+            self.last_dispatch = f"{self.direct_nav_goal_topic} {zone}"
+            return f"Driving directly to {zone}, ignoring lane guidance.", ("direct", zone)
 
         if action in {"change_lane", "keep_lane"}:
             if lane not in {"lane1", "lane2"}:
                 self.last_dispatch = "missing lane"
-                return "차선이 명확하지 않습니다.", None
+                return "The target lane is unclear.", None
             self.lane_pub.publish(String(data=lane))
             self.motion_pub.publish(String(data="start"))
+            if self.policy_goal_mode:
+                return self._dispatch_policy_cruise(lane, "lane_command")
             self.last_dispatch = f"/lane_mode_command {lane}"
-            return f"{lane}으로 주행합니다.", None
+            return f"Driving in {lane}.", None
 
         if action == "stop":
             self.motion_pub.publish(String(data="stop"))
             self.nav_goal_pub.publish(String(data="stop"))
             self.direct_goal_pub.publish(String(data="stop"))
             self.last_dispatch = "/motion_control_command stop"
-            return "정지합니다.", None
+            return "Stopping.", None
 
         if action == "start":
             self.motion_pub.publish(String(data="start"))
+            if self.policy_goal_mode:
+                return self._dispatch_policy_start()
             self.last_dispatch = "/motion_control_command start"
-            return "주행을 시작합니다.", None
+            return "Starting driving.", None
 
         self.last_dispatch = "none"
         return None, None
+
+    def _dispatch_policy_start(self):
+        """In policy-only mode, start/drive means cruise until stop."""
+        lane = self.current_lane if self.current_lane in {"lane1", "lane2"} else "lane2"
+        return self._dispatch_policy_cruise(lane, "start")
+
+    def _dispatch_policy_cruise(self, lane, reason):
+        zone = self._next_cruise_zone()
+        return self._dispatch_policy_goal(zone, lane, reason, cruise=True)
+
+    def _dispatch_policy_goal(self, zone, lane, reason, cruise=False):
+        if zone not in self.zones:
+            self.last_dispatch = f"policy cruise unavailable: {zone}"
+            return "No follow-up driving target was found.", None
+        payload = {"zone": zone}
+        if cruise:
+            payload["mode"] = "cruise"
+        if lane in {"lane1", "lane2"}:
+            payload["lane"] = lane
+            self.lane_pub.publish(String(data=lane))
+        self.nav_goal_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
+        self.motion_pub.publish(String(data="start"))
+        self.last_drive_step = {
+            "action": "drive_to_zone",
+            "zone": zone,
+            "lane": lane if lane in {"lane1", "lane2"} else "default",
+        }
+        self.last_dispatch = f"{self.nav_goal_topic} {payload} ({reason})"
+        lane_text = f" / {lane}" if lane in {"lane1", "lane2"} else ""
+        if cruise:
+            return f"Cruising{lane_text}.", None
+        return f"Continuing toward {zone}{lane_text}.", ("zone", zone)
+
+    def _next_cruise_zone(self):
+        for anchor in (self.last_arrived_zone, (self.last_drive_step or {}).get("zone")):
+            if anchor in TRACK_CRUISE_ZONES:
+                index = TRACK_CRUISE_ZONES.index(anchor)
+                return TRACK_CRUISE_ZONES[(index + 1) % len(TRACK_CRUISE_ZONES)]
+        return TRACK_CRUISE_ZONES[0]
 
     def _handle_status(self, text):
         """Forward navigator status to the GUI and advance the plan queue when the
@@ -1095,6 +1184,9 @@ class ChatGuiNode(Node):
         self.last_nav_status = text
         self.status_q.put(text)
         with self._plan_lock:
+            arrived_zone = self._arrived_zone_from_status(text)
+            if arrived_zone is not None:
+                self.last_arrived_zone = arrived_zone
             waiting = self._waiting
             if waiting is None:
                 return
@@ -1113,7 +1205,16 @@ class ChatGuiNode(Node):
                 # (A drive_direct step self-cancels /nav_goal, so its idle is ignored.)
                 self.pending_steps = []
                 self._waiting = None
-                self.event_q.put(("system", "남은 계획 단계를 취소했습니다."))
+                self.event_q.put(("system", "Remaining plan steps were cancelled."))
+
+    def _arrived_zone_from_status(self, text):
+        if text.startswith("arrived:"):
+            parts = text.split(None, 2)
+            return parts[1] if len(parts) > 1 and parts[1] in self.zones else None
+        if text.startswith("direct arrived:"):
+            parts = text.split(None, 2)
+            return parts[2] if len(parts) > 2 and parts[2] in self.zones else None
+        return None
 
     def _advance_locked(self):
         """Continue the plan after an arrival. Caller must hold self._plan_lock."""
@@ -1138,11 +1239,55 @@ class ChatGuiNode(Node):
             raw_steps = [parsed] if parsed.get("action") is not None else []
         steps = [self._normalize_step(step) for step in raw_steps if isinstance(step, dict)]
         steps = [step for step in steps if step["action"] != "none"]
+        steps = self._apply_explicit_lane_override(steps)
+        steps = self._apply_unspecified_lane_defaults(steps)
         steps = self._apply_stop_target(steps)
         steps = self._apply_change_lane_waypoint(steps)
         if not steps:
             steps = [{"action": "none", "zone": None, "lane": "default"}]
         return {"steps": steps, "reason": str(parsed.get("reason") or "")}
+
+    def _apply_explicit_lane_override(self, steps):
+        """Do not let the LLM turn "go T4 through lane2" into direct driving."""
+        lane = self._explicit_lane_from_text(self.last_user_text or "")
+        if lane is None:
+            return steps
+        fixed = []
+        for step in steps:
+            if (
+                step["action"] == "drive_direct"
+                and step.get("zone") in self.zones
+                and not self._is_direct_only_zone(step.get("zone"))
+            ):
+                step = {
+                    "action": "drive_to_zone",
+                    "zone": step.get("zone"),
+                    "lane": lane,
+                }
+            elif step["action"] == "drive_to_zone" and step["lane"] == "default":
+                step = {**step, "lane": lane}
+            fixed.append(step)
+        return fixed
+
+    @staticmethod
+    def _explicit_lane_from_text(text):
+        if LANE1_RE.search(text):
+            return "lane1"
+        if LANE2_RE.search(text):
+            return "lane2"
+        return None
+
+    def _apply_unspecified_lane_defaults(self, steps):
+        """For plain "go T2", keep the current lane even if the LLM guessed one."""
+        text = self.last_user_text or ""
+        if self._explicit_lane_from_text(text) is not None or CHANGE_LANE_RE.search(text):
+            return steps
+        fixed = []
+        for step in steps:
+            if step["action"] == "drive_to_zone" and step["lane"] in {"lane1", "lane2"}:
+                step = {**step, "lane": "default"}
+            fixed.append(step)
+        return fixed
 
     def _build_zone_text_patterns(self):
         """Ordered (regex, canonical zone) list for spotting a zone name in free
