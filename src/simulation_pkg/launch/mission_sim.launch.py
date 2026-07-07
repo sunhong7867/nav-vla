@@ -132,6 +132,7 @@ def generate_launch_description():
     use_rqt = LaunchConfiguration("use_rqt")
     use_obstacles = LaunchConfiguration("use_obstacles")
     use_traffic_light = LaunchConfiguration("use_traffic_light")
+    use_mission_events = LaunchConfiguration("use_mission_events")
     use_driver = LaunchConfiguration("use_driver")
     driver_cmd_topic = LaunchConfiguration("driver_cmd_topic")
     motion_lidar_topic = LaunchConfiguration("motion_lidar_topic")
@@ -158,6 +159,11 @@ def generate_launch_description():
             description="Spawn the mission traffic light stand.",
         ),
         DeclareLaunchArgument(
+            "use_mission_events",
+            default_value="true",
+            description="Enable mission events: lane change at M2/T2 and stop 5s at T3.",
+        ),
+        DeclareLaunchArgument(
             "use_driver",
             default_value="true",
             description="Run the old YOLO/lane/path/motion driver that owns /cmd_vel. "
@@ -172,7 +178,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "motion_lidar_topic",
-            default_value="lidar_obstacle_info",
+            default_value="/none",
             description="motion_planner's lidar-obstacle STOP topic. Set to /none for "
                         "avoidance mode so it does NOT stop on obstacles.",
         ),
@@ -271,9 +277,12 @@ def generate_launch_description():
         TimerAction(
             period=6.0,
             actions=[
-                Node(
-                    package="simulation_pkg",
-                    executable="load_ego_car_node",
+                ExecuteProcess(
+                    cmd=[
+                        "python3",
+                        "-m",
+                        "simulation_pkg.lib.load_ego_car_node",
+                    ],
                     output="screen",
                 ),
             ],
@@ -281,16 +290,22 @@ def generate_launch_description():
         TimerAction(
             period=8.0,
             actions=[
-                Node(
+                ExecuteProcess(
                     condition=IfCondition(use_obstacles),
-                    package="simulation_pkg",
-                    executable="load_obstable_car_node",
+                    cmd=[
+                        "python3",
+                        "-m",
+                        "simulation_pkg.lib.load_obstable_car_node",
+                    ],
                     output="screen",
                 ),
-                Node(
+                ExecuteProcess(
                     condition=IfCondition(use_traffic_light),
-                    package="simulation_pkg",
-                    executable="load_traffic_light_node",
+                    cmd=[
+                        "python3",
+                        "-m",
+                        "simulation_pkg.lib.load_traffic_light_node",
+                    ],
                     output="screen",
                 ),
                 Node(
@@ -363,11 +378,22 @@ def generate_launch_description():
                     parameters=[{"sub_lidar_obstacle_topic": motion_lidar_topic}],
                     output="screen",
                 ),
-                Node(
+                ExecuteProcess(
                     condition=IfCondition(use_driver),
+                    cmd=[
+                        "python3",
+                        "-m",
+                        "simulation_pkg.simulation_sender_node",
+                        "--ros-args",
+                        "-p",
+                        ["pub_topic:=", driver_cmd_topic],
+                    ],
+                    output="screen",
+                ),
+                Node(
+                    condition=IfCondition(use_mission_events),
                     package="simulation_pkg",
-                    executable="sim_simulation_sender_node",
-                    parameters=[{"pub_topic": driver_cmd_topic}],
+                    executable="mission_event_node",
                     output="screen",
                 ),
             ],

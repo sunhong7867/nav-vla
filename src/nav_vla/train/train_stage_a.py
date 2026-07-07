@@ -63,6 +63,19 @@ def lane_index(meta, record, nav_mode):
     return LANE_VOCAB.get(lane, LANE_VOCAB["default"])
 
 
+def is_lane_changing_record(record):
+    """Frames captured mid lane-change. These teach a lane2->lane1 swerve at the
+    spawn, which contaminates the spawn behaviour of a lane-agnostic policy."""
+    lane = record.get("lane")
+    if not isinstance(lane, str):
+        return False
+    try:
+        info = json.loads(lane)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return bool(info.get("is_lane_changing"))
+
+
 def state_features(record):
     rel = record.get("rel_goal") or {}
     pose = record.get("pose") or {}
@@ -90,9 +103,11 @@ def parse_sessions(text, data_root):
     return {s.strip() for s in str(text).split(",") if s.strip()}
 
 
-def scan_episodes(data_root, vocab, success_only=True, nav_mode="lane", sessions=None):
+def scan_episodes(data_root, vocab, success_only=True, nav_mode="lane", sessions=None,
+                  drop_lane_changes=True):
     """Return episode-level samples so train/val can split by rollout."""
     episodes = []
+    dropped_lc = 0
     for ep in sorted(glob.glob(os.path.join(data_root, "session_*", "ep_*"))):
         if sessions is not None and os.path.basename(os.path.dirname(ep)) not in sessions:
             continue
@@ -116,6 +131,9 @@ def scan_episodes(data_root, vocab, success_only=True, nav_mode="lane", sessions
         samples = []
         for line in open(sp):
             r = json.loads(line)
+            if drop_lane_changes and is_lane_changing_record(r):
+                dropped_lc += 1
+                continue
             img = os.path.join(ep, r["image"])
             if os.path.exists(img):
                 lidx = lane_index(meta, r, nav_mode)
@@ -129,6 +147,8 @@ def scan_episodes(data_root, vocab, success_only=True, nav_mode="lane", sessions
                 ))
         if samples:
             episodes.append({"path": ep, "zone": zname, "samples": samples})
+    if drop_lane_changes and dropped_lc:
+        print(f"dropped {dropped_lc} lane-changing frames (spawn-swerve contamination)")
     return episodes
 
 
@@ -203,13 +223,19 @@ def main():
     ap.add_argument("--nav-mode", choices=["lane", "direct", "all"], default="lane")
     ap.add_argument("--val-ratio", type=float, default=0.15)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--keep-lane-changes",
+        action="store_true",
+        help="Keep mid lane-change frames (default: drop them to avoid spawn-swerve).",
+    )
     args = ap.parse_args()
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     vocab = load_zone_vocab()
     sessions = parse_sessions(args.sessions, args.data)
     episodes = scan_episodes(
-        args.data, vocab, nav_mode=args.nav_mode, sessions=sessions
+        args.data, vocab, nav_mode=args.nav_mode, sessions=sessions,
+        drop_lane_changes=not args.keep_lane_changes,
     )
     random.Random(args.seed).shuffle(episodes)
     samples = flatten_episodes(episodes)

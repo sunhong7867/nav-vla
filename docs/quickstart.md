@@ -50,3 +50,20 @@ Mission simulation:
 qqq
 ros2 launch simulation_pkg mission_sim.launch.py
 ```
+
+Mission simulation with obstacle lane-change avoidance:
+
+```bash
+qqq
+ros2 launch simulation_pkg auto_drive.launch.py
+```
+
+In `auto_drive.launch.py`, traffic lights are still handled by `motion_planner_node`,
+but lidar obstacles are routed to `navigator_node` so the vehicle changes lanes
+instead of stopping in front of an obstacle vehicle. To test the old stop-at-obstacle
+behavior, run:
+
+```bash
+qqq
+ros2 launch simulation_pkg auto_drive.launch.py use_avoidance:=false motion_lidar_topic:=lidar_obstacle_info
+```

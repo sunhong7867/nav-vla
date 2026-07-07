@@ -17,6 +17,7 @@ import os
 import queue
 import re
 import base64
+import binascii
 import csv
 import datetime as dt
 import io
@@ -25,6 +26,7 @@ import time
 import tkinter as tk
 import urllib.error
 import urllib.request
+from collections import deque
 from tkinter import scrolledtext
 from tkinter import ttk
 
@@ -100,6 +102,32 @@ DIRECT_ONLY_ZONES = {
     "Slot3",
     "Slot4",
 }
+# Words that mean "come to a halt". Used to tell a standalone stop apart from a
+# positional "stop at <zone>" (drive there, then stop).
+STOP_WORD_RE = re.compile(r"stop|halt|pause|정지|멈춰|멈추|세워|세우", re.IGNORECASE)
+# Words that tie an action to REACHING a zone (waypoint / position trigger), e.g.
+# "at M3", "M3에서", "M3까지 가서", "start 선 지나서", "after M3".
+POSITION_TRIGGER_RE = re.compile(r"\bat\b|\bafter\b|에서|지나|까지|도착|reach", re.IGNORECASE)
+# Lane-change intent and explicit lane numbers, for reconstructing waypoint plans.
+CHANGE_LANE_RE = re.compile(
+    r"change\s*lane|switch\s*lane|lane\s*change|차선\s*변경|차선변경|차로\s*변경", re.IGNORECASE
+)
+LANE1_RE = re.compile(r"lane\s*1|1\s*차선|first lane|inner lane|left lane", re.IGNORECASE)
+LANE2_RE = re.compile(r"lane\s*2|2\s*차선|second lane|outer lane|right lane", re.IGNORECASE)
+# Explicit phrases that name the Start line as a target. Bare "start" is left out
+# on purpose: it collides with the start verb ("start driving").
+START_LINE_PHRASES = (
+    "start line",
+    "start 선",
+    "출발선",
+    "출발 선",
+    "출발지점",
+    "출발 지점",
+    "스타트 라인",
+)
+# Ascii zone names that are also common English words, so a bare-word match would
+# fire on unrelated text. Matched only through longer explicit phrases instead.
+AMBIGUOUS_BARE_ZONES = {"start", "in", "out"}
 
 SYSTEM_TEMPLATE = """You are a ROS 2 driving-command interpreter for a small track car.
 The user may write Korean or English.
@@ -237,7 +265,7 @@ class ChatGuiNode(Node):
             "path_topic", "/path_planning_result"
         ).value
         odom_topic = self.declare_parameter("odom_topic", "/odom").value
-        alpamayo_image_topic = self.declare_parameter(
+        self.alpamayo_image_topic = self.declare_parameter(
             "alpamayo_image_topic", "/camera/image_raw"
         ).value
         self.alpamayo_image_max_width = int(
@@ -245,6 +273,9 @@ class ChatGuiNode(Node):
         )
         self.alpamayo_image_quality = int(
             self.declare_parameter("alpamayo_image_quality", 75).value
+        )
+        self.alpamayo_frame_count = int(
+            self.declare_parameter("alpamayo_frame_count", 4).value
         )
         self.vla_judgment_backend = str(
             self.declare_parameter("vla_judgment_backend", "local").value
@@ -267,6 +298,7 @@ class ChatGuiNode(Node):
 
         self.zones = self._load_zones()
         self.zone_names = list(self.zones)
+        self._zone_text_patterns = self._build_zone_text_patterns()
         self.system_prompt = SYSTEM_TEMPLATE.format(zones=self._zone_lines())
         self.current_lane = "lane2"
         self.last_user_text = "-"
@@ -282,6 +314,7 @@ class ChatGuiNode(Node):
         self.latest_pose_time = None
         self.latest_alpamayo_image = None
         self.latest_alpamayo_image_time = None
+        self.alpamayo_image_buffer = deque(maxlen=max(1, self.alpamayo_frame_count))
         self.alpamayo_busy = False
         self.alpamayo_last_call = 0.0
         self.alpamayo_last_text = ""
@@ -319,7 +352,7 @@ class ChatGuiNode(Node):
         self.create_subscription(LaneInfo, lane_info_topic, self._lane_info_cb, 10)
         self.create_subscription(PathPlanningResult, path_topic, self._path_cb, 10)
         self.create_subscription(Odometry, odom_topic, self._odom_cb, 10)
-        self.create_subscription(Image, alpamayo_image_topic, self._alpamayo_image_cb, 10)
+        self.create_subscription(Image, self.alpamayo_image_topic, self._alpamayo_image_cb, 10)
 
         parser_desc = (
             f"action_policy={self.action_policy_ckpt}"
@@ -332,6 +365,10 @@ class ChatGuiNode(Node):
         )
 
     def _init_alpamayo_logs(self):
+        # Only the Alpamayo judgment backend produces these records. In local
+        # mode we skip log/CSV/image creation entirely.
+        if self.vla_judgment_backend != "alpamayo":
+            return
         if not self.alpamayo_log_dir:
             return
         os.makedirs(self.alpamayo_log_dir, exist_ok=True)
@@ -344,6 +381,8 @@ class ChatGuiNode(Node):
             self.alpamayo_log_dir,
             f"alpamayo_judgments_{stamp}.csv",
         )
+        self.alpamayo_image_dir = os.path.join(self.alpamayo_log_dir, "images", stamp)
+        os.makedirs(self.alpamayo_image_dir, exist_ok=True)
         with open(self.alpamayo_log_csv, "w", encoding="utf-8", newline="") as file:
             writer = csv.DictWriter(file, fieldnames=self._alpamayo_log_fields())
             writer.writeheader()
@@ -361,6 +400,7 @@ class ChatGuiNode(Node):
             "dispatch",
             "pose",
             "image_count",
+            "image_files",
             "reasoning",
             "endpoint",
         ]
@@ -440,6 +480,7 @@ class ChatGuiNode(Node):
             return
         self.latest_alpamayo_image = payload
         self.latest_alpamayo_image_time = time.monotonic()
+        self.alpamayo_image_buffer.append(payload)
 
     def _image_msg_to_jpeg_payload(self, msg):
         ch = 4 if msg.encoding in ("rgba8", "bgra8") else 3
@@ -456,11 +497,15 @@ class ChatGuiNode(Node):
             )
         buffer = io.BytesIO()
         image.save(buffer, format="JPEG", quality=self.alpamayo_image_quality)
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         return {
             "encoding": "jpeg_base64",
             "topic_encoding": str(msg.encoding),
             "width": image.width,
             "height": image.height,
+            "stamp": stamp,
+            "source_topic": self.alpamayo_image_topic,
+            "received_monotonic": time.monotonic(),
             "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
         }
 
@@ -740,7 +785,8 @@ class ChatGuiNode(Node):
         if not self.alpamayo_log_jsonl or not self.alpamayo_log_csv:
             return
         now = dt.datetime.now().isoformat(timespec="seconds")
-        clean_snapshot = self._snapshot_for_log(snapshot)
+        image_files = self._save_alpamayo_images(snapshot, now)
+        clean_snapshot = self._snapshot_for_log(snapshot, image_files)
         row = {
             "time": now,
             "model": str(teacher_payload.get("model") or self.alpamayo_model_id),
@@ -752,6 +798,7 @@ class ChatGuiNode(Node):
             "dispatch": str(clean_snapshot.get("last_dispatch") or ""),
             "pose": json.dumps(clean_snapshot.get("pose") or {}, ensure_ascii=False),
             "image_count": str(len(clean_snapshot.get("images") or [])),
+            "image_files": ";".join(image_files),
             "reasoning": teacher_text,
             "endpoint": self.alpamayo_endpoint,
         }
@@ -769,17 +816,48 @@ class ChatGuiNode(Node):
         except OSError as exc:
             self.alpamayo_last_error = f"log write failed: {exc}"
 
+    def _save_alpamayo_images(self, snapshot, timestamp):
+        if not getattr(self, "alpamayo_image_dir", ""):
+            return []
+        saved = []
+        safe_time = re.sub(r"[^0-9A-Za-z_\\-]", "_", timestamp)
+        for index, image in enumerate(snapshot.get("images") or []):
+            if image.get("encoding") != "jpeg_base64":
+                continue
+            data = image.get("data") or ""
+            if not data:
+                continue
+            stamp = image.get("stamp")
+            if isinstance(stamp, (int, float)) and stamp > 0:
+                frame_id = f"cam_{stamp:.6f}".replace(".", "_")
+            else:
+                frame_id = safe_time
+            path = os.path.join(self.alpamayo_image_dir, f"{frame_id}_{index:02d}.jpg")
+            try:
+                with open(path, "wb") as file:
+                    file.write(base64.b64decode(data))
+            except (OSError, ValueError, binascii.Error) as exc:
+                self.alpamayo_last_error = f"image log write failed: {exc}"
+                continue
+            saved.append(os.path.relpath(path, self.alpamayo_log_dir))
+        return saved
+
     @staticmethod
-    def _snapshot_for_log(snapshot):
+    def _snapshot_for_log(snapshot, image_files=None):
         clean = dict(snapshot)
         images = []
-        for image in clean.get("images") or []:
+        image_files = image_files or []
+        for index, image in enumerate(clean.get("images") or []):
             images.append({
                 "encoding": image.get("encoding"),
                 "topic_encoding": image.get("topic_encoding"),
                 "width": image.get("width"),
                 "height": image.get("height"),
+                "stamp": image.get("stamp"),
+                "source_topic": image.get("source_topic"),
+                "received_monotonic": image.get("received_monotonic"),
                 "data_bytes_base64": len(image.get("data") or ""),
+                "file": image_files[index] if index < len(image_files) else "",
             })
         clean["images"] = images
         return clean
@@ -799,7 +877,7 @@ class ChatGuiNode(Node):
             "path": self._fresh(self.latest_path_info, self.latest_path_time),
             "pose": self._fresh(self.latest_pose, self.latest_pose_time),
             "images": self._fresh(
-                [self.latest_alpamayo_image] if self.latest_alpamayo_image else [],
+                list(self.alpamayo_image_buffer),
                 self.latest_alpamayo_image_time,
                 [],
             ),
@@ -807,17 +885,21 @@ class ChatGuiNode(Node):
         }
 
     def _alpamayo_prompt(self, snapshot):
+        clean_snapshot = self._snapshot_for_log(snapshot)
         return (
             "You are Alpamayo 1.5 used as a non-controlling teacher for a small "
             "ROS2 track vehicle. Review the latest camera/perception/planner "
-            "snapshot and produce one concise natural-language paragraph. "
+            "snapshot and produce one concise natural-language paragraph based "
+            "on the visible image sequence. "
             "Do not command the vehicle directly. Focus on whether the parsed "
             "intent, lane choice, target zone, and current motion are consistent. "
+            "Only mention vehicles, pedestrians, traffic lights, or obstacles if "
+            "they are actually visible in the provided camera frames. "
             "Do not use bullets, headings, JSON, numbered lists, or labels. "
             "Write 2 to 4 complete sentences as if explaining the current driving "
             "situation to an operator. If visual evidence is insufficient, say "
             "what is missing in the same paragraph.\n\n"
-            f"Snapshot JSON:\n{json.dumps(snapshot, ensure_ascii=False, indent=2)}"
+            f"Snapshot JSON:\n{json.dumps(clean_snapshot, ensure_ascii=False, indent=2)}"
         )
 
     @staticmethod
@@ -1056,9 +1138,92 @@ class ChatGuiNode(Node):
             raw_steps = [parsed] if parsed.get("action") is not None else []
         steps = [self._normalize_step(step) for step in raw_steps if isinstance(step, dict)]
         steps = [step for step in steps if step["action"] != "none"]
+        steps = self._apply_stop_target(steps)
+        steps = self._apply_change_lane_waypoint(steps)
         if not steps:
             steps = [{"action": "none", "zone": None, "lane": "default"}]
         return {"steps": steps, "reason": str(parsed.get("reason") or "")}
+
+    def _build_zone_text_patterns(self):
+        """Ordered (regex, canonical zone) list for spotting a zone name in free
+        text. Longest phrases first so 'crosswalk_stop' wins over 'crosswalk'."""
+        entries = [(phrase, "Start") for phrase in START_LINE_PHRASES]
+        entries += [("T1", "T1/M1"), ("M1", "T1/M1")]
+        entries += [(name, name) for name in self.zone_names]
+        entries += [(alias, canonical) for alias, canonical in ZONE_ALIASES.items()]
+        entries.sort(key=lambda item: len(item[0]), reverse=True)
+        patterns = []
+        for phrase, canonical in entries:
+            if re.fullmatch(r"[A-Za-z0-9 ]+", phrase):
+                if phrase.lower() in AMBIGUOUS_BARE_ZONES:
+                    continue
+                # Bound against ascii alnum only, so an adjacent Korean particle
+                # ("M3에서", "T4까지") still counts as a boundary but "M30" does not.
+                regex = re.compile(
+                    r"(?<![A-Za-z0-9])" + re.escape(phrase) + r"(?![A-Za-z0-9])",
+                    re.IGNORECASE,
+                )
+            else:
+                regex = re.compile(re.escape(phrase), re.IGNORECASE)
+            patterns.append((regex, canonical))
+        return patterns
+
+    def _match_zone_in_text(self, text):
+        for regex, canonical in self._zone_text_patterns:
+            if regex.search(text):
+                return canonical
+        return None
+
+    def _apply_stop_target(self, steps):
+        """A small parser (qwen3:4b) often collapses "stop at <zone>" into a bare
+        in-place stop. When the user tied the stop to reaching a zone, drive there
+        and stop instead of halting where we stand."""
+        if len(steps) != 1 or steps[0]["action"] != "stop":
+            return steps
+        text = self.last_user_text or ""
+        if not (STOP_WORD_RE.search(text) and POSITION_TRIGGER_RE.search(text)):
+            return steps
+        zone = self._match_zone_in_text(text)
+        if not zone or zone not in self.zones:
+            return steps
+        action = "drive_direct" if zone in DIRECT_ONLY_ZONES else "drive_to_zone"
+        return [{"action": action, "zone": zone, "lane": steps[0]["lane"]}]
+
+    def _apply_change_lane_waypoint(self, steps):
+        """"change lane at <zone>" is a waypoint: drive to the zone in the current
+        lane, then switch lanes there. The small parser mishandles this in two ways
+        — it switches lanes immediately (drops the drive), or it drives to the zone
+        and drops the lane change. Rebuild the two-step plan from the raw text."""
+        text = self.last_user_text or ""
+        if not (CHANGE_LANE_RE.search(text) and POSITION_TRIGGER_RE.search(text)):
+            return steps
+        zone = self._match_zone_in_text(text)
+        if not zone or zone not in self.zones:
+            return steps
+        # Already a proper waypoint (drive then change lane): leave it alone.
+        actions = [step["action"] for step in steps]
+        if actions in (["drive_to_zone", "change_lane"], ["drive_direct", "change_lane"]):
+            return steps
+        # Only rebuild when the parser collapsed it into a single drive or a single
+        # lane change; multi-step plans may carry a further destination we'd drop.
+        if len(steps) != 1 or actions[0] not in {"change_lane", "drive_to_zone", "drive_direct"}:
+            return steps
+        lane = self._resolve_change_lane_target(text, steps[0])
+        return [
+            {"action": "drive_to_zone", "zone": zone, "lane": "default"},
+            {"action": "change_lane", "zone": None, "lane": lane},
+        ]
+
+    def _resolve_change_lane_target(self, text, step):
+        """Which lane to switch to at the waypoint: an explicit lane in the text
+        wins, else the lane the parser already chose, else the opposite of now."""
+        if LANE1_RE.search(text):
+            return "lane1"
+        if LANE2_RE.search(text):
+            return "lane2"
+        if step["action"] == "change_lane" and step["lane"] in {"lane1", "lane2"}:
+            return step["lane"]
+        return "lane1" if self.current_lane == "lane2" else "lane2"
 
     def _normalize_step(self, step):
         action = str(step.get("action") or "none").strip()

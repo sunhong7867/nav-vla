@@ -131,7 +131,7 @@ class DataEngine(Node):
         self.goal_lane = str(
             self.declare_parameter("goal_lane", "default").value
         ).strip().lower()
-        if self.goal_lane not in {"default", "lane1", "lane2"}:
+        if self.goal_lane not in {"default", "lane1", "lane2", "alternate"}:
             self.goal_lane = "default"
         self.rounds = int(self.declare_parameter("rounds", 3).value)
         self.shuffle = bool(self.declare_parameter("shuffle", True).value)
@@ -282,11 +282,27 @@ class DataEngine(Node):
             f"{len(self.zone_names)} zones x {self.rounds} rounds "
             f"-> {session_dir if self.save else '(no save)'}")
         ep = 0
+        # spawn is lane2, so the first crossover targets lane1 (2->1), then 1->2, ...
+        lane_toggle = "lane1"
         for r in range(self.rounds):
             order = self._episode_plan()
-            if self.shuffle:
+            if self.goal_lane == "alternate":
+                # Rotate the loop's start zone each round so every segment gets BOTH
+                # change directions over rounds (a fixed order only ever changes lane
+                # one way per segment). Reset the toggle so each round restarts 2->1.
+                # Kept in track order (never shuffled) so hops stay adjacent.
+                rot = r % len(order) if order else 0
+                order = order[rot:] + order[:rot]
+                lane_toggle = "lane1"
+            elif self.shuffle:
                 random.shuffle(order)
             for name, goal_lane in order:
+                # alternate mode: flip the target lane every episode so each one
+                # crosses from the lane the previous episode ended in (deterministic,
+                # so current lane != target lane always -- no accidental no-op).
+                if goal_lane is None:
+                    goal_lane = lane_toggle
+                    lane_toggle = "lane2" if lane_toggle == "lane1" else "lane1"
                 self._episode(ep, name, goal_lane, session_dir)
                 ep += 1
         self.get_logger().info(f"data engine DONE: {ep} episodes")
@@ -384,6 +400,8 @@ class DataEngine(Node):
     def _lane_plan(self):
         if self.nav_mode != "lane":
             return ["default"]
+        if self.goal_lane == "alternate":
+            return ["alternate"]
         if self.goal_lane in {"lane1", "lane2"}:
             return [self.goal_lane]
         return ["lane1", "lane2"]
@@ -391,6 +409,9 @@ class DataEngine(Node):
     def _episode_plan(self):
         if self.nav_mode != "lane":
             return [(name, "default") for name in self.zone_names]
+        if self.goal_lane == "alternate":
+            # lane=None: resolved per-episode in _run so it flips every episode.
+            return [(name, None) for name in self.zone_names]
         lanes = self._lane_plan()
         return [(name, lane) for lane in lanes for name in self.zone_names]
 

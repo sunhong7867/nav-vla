@@ -11,6 +11,7 @@
   <depend>camera_perception_pkg</depend>
   <depend>decision_making_pkg</depend>
   <depend>debug_pkg</depend>
+  <depend>nav_vla</depend>
 
   <depend>rclpy</depend>
   <depend>cv_bridge</depend>

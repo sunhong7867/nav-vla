@@ -69,6 +69,7 @@ setup(
         
         'draw_trajectory_node = simulation_pkg.lib.draw_trajectory_node:main', # 궤적 시각화
         'simple_track_driver_node = simulation_pkg.simple_track_driver_node:main',
+        'mission_event_node = simulation_pkg.mission_event_node:main',
         'lane_mode_gui_node = simulation_pkg.lane_mode_gui_node:main',
         'yolo_debug_image_viewer_node = simulation_pkg.yolo_debug_image_viewer_node:main',
         'lane_tuning_gui_node = simulation_pkg.lane_tuning_gui_node:main',

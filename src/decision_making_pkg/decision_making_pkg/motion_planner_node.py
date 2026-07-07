@@ -21,9 +21,11 @@ SUB_MOTION_CONTROL_TOPIC_NAME = "motion_control_command"
 SUB_DIRECT_MOTION_TOPIC_NAME = "direct_motion_command"
 PUB_TOPIC_NAME = "topic_control_signal"
 TIMER = 0.1
-TARGET_SPEED_RAW = 140
+TARGET_SPEED_RAW = 150
 MIN_CORNER_SPEED_RAW = 100
-LANE_CHANGE_SPEED_RAW = 35
+LANE_CHANGE_SPEED_RAW = 70
+LANE_CHANGE_STEERING_GAIN = 2.0
+LANE_CHANGE_HOLD_SEC = 8.0
 CORNER_SLOWDOWN_STEERING = 2
 MAX_STEERING_COMMAND = 7
 TARGET_POINT_INDEX_FROM_END = 10
@@ -58,6 +60,12 @@ class MotionPlanningNode(Node):
         self.direct_motion_timeout = float(
             self.declare_parameter("direct_motion_timeout", 0.3).value
         )
+        # Direct-motion override lets an external node (navigator) seize /cmd via
+        # direct_motion_command. Off by default: it was never actually run and its
+        # zero-speed stop commands freeze normal perception-driven lane driving.
+        self.use_direct_motion_override = bool(
+            self.declare_parameter("use_direct_motion_override", False).value
+        )
         self.pub_topic = self.declare_parameter("pub_topic", PUB_TOPIC_NAME).value
         self.timer_period = self.declare_parameter("timer", TIMER).value
         self.target_speed_raw = int(
@@ -76,6 +84,20 @@ class MotionPlanningNode(Node):
             self.declare_parameter("corner_slowdown_steering", CORNER_SLOWDOWN_STEERING).value
         )
         self.corner_slowdown_steering = max(0, min(MAX_STEERING_COMMAND, self.corner_slowdown_steering))
+        # Steering is a weak cubic of path slope; on curves the mid-slope command is
+        # too small to pull fully into the new lane, so scale it up during a lane
+        # change only (normal driving is unaffected).
+        self.lane_change_steering_gain = float(
+            self.declare_parameter("lane_change_steering_gain", LANE_CHANGE_STEERING_GAIN).value
+        )
+        self.lane_change_steering_gain = max(1.0, self.lane_change_steering_gain)
+        # Once a lane change starts, force the low-speed + steering-gain window for
+        # this long, regardless of when the perception is_lane_changing flag clears
+        # (it can clear before the car has physically settled into the new lane).
+        self.lane_change_hold_sec = float(
+            self.declare_parameter("lane_change_hold_sec", LANE_CHANGE_HOLD_SEC).value
+        )
+        self.lane_change_hold_until = 0.0
 
         self.qos_profile = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -137,7 +159,12 @@ class MotionPlanningNode(Node):
 
     def path_callback(self, msg):
         self.path_data = list(zip(msg.x_points, msg.y_points))
-        self.path_is_lane_changing = bool(msg.is_lane_changing)
+        is_changing = bool(msg.is_lane_changing)
+        if is_changing and not self.path_is_lane_changing:
+            # rising edge: hold the lane-change regime for a fixed window
+            now = self.get_clock().now().nanoseconds * 1e-9
+            self.lane_change_hold_until = now + self.lane_change_hold_sec
+        self.path_is_lane_changing = is_changing
 
     def traffic_light_callback(self, msg):
         self.traffic_light_data = msg
@@ -162,7 +189,9 @@ class MotionPlanningNode(Node):
 
     def timer_callback(self):
         self.timer_count += 1
-        direct_command = self._fresh_direct_motion_command()
+        direct_command = (
+            self._fresh_direct_motion_command() if self.use_direct_motion_override else None
+        )
         if direct_command is not None:
             self.steering_command = int(direct_command.steering)
             self.left_speed_command = int(direct_command.left_speed)
@@ -188,10 +217,18 @@ class MotionPlanningNode(Node):
                 target_point = self.path_data[0]
                 start_point = self.path_data[-1]
 
+            now = self.get_clock().now().nanoseconds * 1e-9
+            in_lane_change = self.path_is_lane_changing or now < self.lane_change_hold_until
+
             target_slope = DMFL.calculate_slope_between_points(target_point, start_point)
             self.steering_command = convert_steeringangle2command(90, target_slope)
+            if in_lane_change and self.lane_change_steering_gain != 1.0:
+                boosted = round(self.steering_command * self.lane_change_steering_gain)
+                self.steering_command = max(
+                    -MAX_STEERING_COMMAND, min(MAX_STEERING_COMMAND, boosted)
+                )
             target_speed = self._target_speed_for_steering(self.steering_command)
-            if self.path_is_lane_changing:
+            if in_lane_change:
                 target_speed = min(target_speed, self.lane_change_speed_raw)
             self.left_speed_command = target_speed
             self.right_speed_command = target_speed

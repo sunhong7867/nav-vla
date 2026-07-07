@@ -88,7 +88,7 @@ zones:
     stop_line_pass_margin: -0.3
     lane_overrides:
       lane2:
-        stop_offset: 1.5
+        stop_offset: 1.0
         stop_line_pass_margin: 0.0
   T3:
     role:

@@ -91,7 +91,9 @@ class AlpamayoRuntime:
             }
 
         frames = self._images_to_frames(images)
-        question = self._build_question(snapshot, retry=False)
+        question = str(payload.get("prompt") or "").strip()
+        if not question:
+            question = self._build_question(snapshot, retry=False)
         answer = self._generate_answer(frames, question)
         raw_answer = answer
         if not self._is_useful_answer(answer):
@@ -175,12 +177,14 @@ class AlpamayoRuntime:
         return images
 
     def _images_to_frames(self, images):
-        # Alpamayo helper expects N_total frames. With one live ROS camera, repeat
-        # the latest frame four times to match the training-era temporal format.
-        image = images[-1]
-        array = self.torch.from_numpy(self.np.array(image)).permute(2, 0, 1)
+        # Alpamayo helper expects N_total frames. Use the actual recent ROS camera
+        # sequence when available; pad only if fewer frames have arrived.
+        selected = list(images)[-self.num_frames_per_camera :]
+        if len(selected) < self.num_frames_per_camera:
+            selected = [selected[0]] * (self.num_frames_per_camera - len(selected)) + selected
         frames = []
-        for _ in range(self.num_frames_per_camera):
+        for image in selected:
+            array = self.torch.from_numpy(self.np.array(image)).permute(2, 0, 1)
             frames.append(array.clone())
         return self.torch.stack(frames, dim=0)
 
@@ -188,10 +192,15 @@ class AlpamayoRuntime:
     def _build_question(snapshot, retry=False):
         if retry:
             return (
-                "What are the key traffic elements visible in this scene and how "
-                "should they influence driving behavior? Answer in full sentences."
+                "Look only at the provided camera frames. Describe the visible "
+                "lane, road markings, vehicles, traffic light, and obstacles in "
+                "2 to 4 full sentences. If an object is not visible, do not invent it."
             )
-        return "Describe the scene."
+        return (
+            "Look only at the provided camera frames and describe the visible "
+            "driving scene in 2 to 4 full sentences. Do not invent vehicles, "
+            "pedestrians, traffic lights, or obstacles that are not visible."
+        )
 
 
 def re_split_words(text):
