@@ -111,7 +111,7 @@ STOP_WORD_RE = re.compile(r"stop|halt|pause|정지|멈춰|멈추|세워|세우",
 POSITION_TRIGGER_RE = re.compile(r"\bat\b|\bafter\b|에서|지나|까지|도착|reach", re.IGNORECASE)
 # Lane-change intent and explicit lane numbers, for reconstructing waypoint plans.
 CHANGE_LANE_RE = re.compile(
-    r"change\s*lane|switch\s*lane|lane\s*change|차선\s*변경|차선변경|차로\s*변경", re.IGNORECASE
+    r"change\s*to\s*lane|change\s*lane|chane\s*lane|switch\s*lane|lane\s*change|차선\s*변경|차선변경|차로\s*변경", re.IGNORECASE
 )
 LANE1_RE = re.compile(r"lane\s*1|1\s*차선|first lane|inner lane|left lane", re.IGNORECASE)
 LANE2_RE = re.compile(r"lane\s*2|2\s*차선|second lane|outer lane|right lane", re.IGNORECASE)
@@ -121,6 +121,7 @@ STANDALONE_DRIVE_RE = re.compile(
     r"^\s*(go|drive|start|resume|continue|출발|주행|가|계속\s*가)\s*$",
     re.IGNORECASE,
 )
+SEQUENCE_SPLIT_RE = re.compile(r"\bthen\b|\band\s+then\b|,|그리고|그다음|다음", re.IGNORECASE)
 # Explicit phrases that name the Start line as a target. Bare "start" is left out
 # on purpose: it collides with the start verb ("start driving").
 START_LINE_PHRASES = (
@@ -537,6 +538,9 @@ class ChatGuiNode(Node):
 
     def parse_command(self, text):
         self.last_user_text = text
+        shortcut = self._deterministic_sequence_plan(text)
+        if shortcut is not None:
+            return shortcut, 0.0, None
         shortcut = self._deterministic_drive_plan(text)
         if shortcut is not None:
             return shortcut, 0.0, None
@@ -593,7 +597,7 @@ class ChatGuiNode(Node):
                 {"role": "user", "content": text},
             ],
             "format": schema,
-            "options": {"temperature": 0, "num_predict": 256},
+            "options": {"temperature": 0, "num_predict": 768},
         }
         request = urllib.request.Request(
             f"{self.host}/api/chat",
@@ -638,6 +642,44 @@ class ChatGuiNode(Node):
             "reason": "deterministic simple destination command",
         }
         return self._normalize_plan(plan)
+
+    def _deterministic_sequence_plan(self, text):
+        """Parse repeated 'change laneX then go Z' chains without LLM lane drift."""
+        if not CHANGE_LANE_RE.search(text or "") or not DRIVE_TO_RE.search(text or ""):
+            return None
+        parts = [p.strip() for p in SEQUENCE_SPLIT_RE.split(text) if p.strip()]
+        if len(parts) < 2:
+            return None
+        steps = []
+        pending_lane = None
+        assumed_lane = self.current_lane if self.current_lane in {"lane1", "lane2"} else "lane2"
+        saw_change = False
+        for part in parts:
+            lane = self._explicit_lane_from_text(part)
+            has_change = CHANGE_LANE_RE.search(part) is not None
+            zone = self._match_zone_in_text(part)
+            if has_change:
+                saw_change = True
+                pending_lane = lane or self._opposite_lane(assumed_lane)
+                lane = pending_lane
+            if zone in self.zones:
+                drive_lane = lane or pending_lane or "default"
+                steps.append({
+                    "action": "drive_to_zone",
+                    "zone": zone,
+                    "lane": drive_lane,
+                })
+                if drive_lane in {"lane1", "lane2"}:
+                    assumed_lane = drive_lane
+                pending_lane = None
+        if not saw_change or len(steps) < 2:
+            return None
+        if pending_lane is not None:
+            steps.append({"action": "change_lane", "zone": None, "lane": pending_lane})
+        return self._normalize_plan({
+            "steps": steps,
+            "reason": "deterministic lane-change destination sequence",
+        })
 
     def vla_judgment_text(self):
         if self.vla_judgment_backend == "alpamayo":
@@ -1276,6 +1318,10 @@ class ChatGuiNode(Node):
         if LANE2_RE.search(text):
             return "lane2"
         return None
+
+    @staticmethod
+    def _opposite_lane(lane):
+        return "lane1" if lane == "lane2" else "lane2"
 
     def _apply_unspecified_lane_defaults(self, steps):
         """For plain "go T2", keep the current lane even if the LLM guessed one."""
