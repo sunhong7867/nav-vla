@@ -1,3 +1,5 @@
+import math
+
 import rclpy
 from geometry_msgs.msg import Twist
 from interfaces_pkg.msg import MotionCommand
@@ -16,15 +18,16 @@ PUB_TOPIC_NAME = set.GAZEBO_CONTROL_TOPIC
 STEER = set.STEERING
 DIRECT = set.DIRECTION
 MAX_SPEED = set.MAX_SPEED
+MAX_STEER_ANGLE = 0.6
+WHEEL_BASE = 2.86
 
 
 class SendSignal:
-    def map_to_steer(self, input_value):
-        max_steer = 0.6458
+    def map_to_steer_angle(self, input_value):
         input_min = -7.0
         input_max = 7.0
         normalized_value = (input_value - input_min) / (input_max - input_min) * 2.0 - 1.0
-        return normalized_value * max_steer
+        return normalized_value * MAX_STEER_ANGLE
 
     def map_to_speed(self, input_speed):
         input_min = -255.0
@@ -33,10 +36,15 @@ class SendSignal:
         return normalized_input_speed * MAX_SPEED
 
     def process(self, motor):
-        steer = self.map_to_steer(STEER * motor.steering)
         left_speed = self.map_to_speed(DIRECT * motor.left_speed)
         right_speed = self.map_to_speed(DIRECT * motor.right_speed)
-        return steer, left_speed, right_speed
+        speed = (left_speed + right_speed) * 0.5
+        steer_angle = self.map_to_steer_angle(STEER * motor.steering)
+        # The Gazebo model currently consumes Twist through a drive system.
+        # Convert the front-wheel steering command to bicycle-model yaw rate so
+        # the simulated car cannot rotate in place and matches Ackermann motion.
+        yaw_rate = speed * math.tan(steer_angle) / WHEEL_BASE
+        return yaw_rate, left_speed, right_speed
 
 
 class MotorControlNode(Node):
@@ -74,10 +82,10 @@ class MotorControlNode(Node):
             self.publisher.publish(self.velocity)
 
     def data_callback(self, motor):
-        angle, left, right = self.simul.process(motor)
+        yaw_rate, left, right = self.simul.process(motor)
 
-        self.velocity.angular.z = float(angle)
-        self.velocity.linear.x = float(left)
+        self.velocity.angular.z = float(yaw_rate)
+        self.velocity.linear.x = float((left + right) * 0.5)
         self.command_count += 1
         if self.command_count % 20 == 1:
             self.get_logger().info(

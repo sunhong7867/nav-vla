@@ -60,11 +60,10 @@ class MotionPlanningNode(Node):
         self.direct_motion_timeout = float(
             self.declare_parameter("direct_motion_timeout", 0.3).value
         )
-        # Direct-motion override lets an external node (navigator) seize /cmd via
-        # direct_motion_command. Off by default: it was never actually run and its
-        # zero-speed stop commands freeze normal perception-driven lane driving.
+        # Direct-motion override lets navigator seize the final vehicle command.
+        # Direct commands are freshness-limited so stale input falls back safely.
         self.use_direct_motion_override = bool(
-            self.declare_parameter("use_direct_motion_override", False).value
+            self.declare_parameter("use_direct_motion_override", True).value
         )
         self.pub_topic = self.declare_parameter("pub_topic", PUB_TOPIC_NAME).value
         self.timer_period = self.declare_parameter("timer", TIMER).value

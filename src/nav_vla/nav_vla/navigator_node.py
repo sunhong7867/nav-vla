@@ -163,6 +163,12 @@ class NavigatorNode(Node):
         self.direct_turn_in_place_angle = float(
             self.declare_parameter("direct_turn_in_place_angle", 0.35).value
         )
+        self.direct_turn_speed = float(
+            self.declare_parameter("direct_turn_speed", self.min_linear).value
+        )
+        self.direct_turn_speed = max(
+            self.min_linear, min(self.max_linear, self.direct_turn_speed)
+        )
         self.direct_heading_deadband = float(
             self.declare_parameter("direct_heading_deadband", 0.06).value
         )
@@ -643,14 +649,14 @@ class NavigatorNode(Node):
         heading = yaw + self.yaw_offset
         heading_err = wrap(math.atan2(dy, dx) - heading)
         angular = clamp(self.k_ang * heading_err, self.max_angular)
+        # An Ackermann car cannot rotate in place.  Keep moving at a low speed
+        # under large heading error so the steered front wheels can change yaw.
         if abs(heading_err) > self.direct_turn_in_place_angle:
-            speed = 0.0
+            speed = self.direct_turn_speed
         else:
             speed = self.max_linear * min(1.0, dist / self.slow_radius)
             speed *= max(0.25, math.cos(heading_err))
         raw_speed = int(round(max(self.min_linear, min(self.max_linear, speed))))
-        if speed <= 0.0:
-            raw_speed = 0
         steering = self._yaw_rate_to_steering_command(
             angular * self.direct_steering_sign
         )
