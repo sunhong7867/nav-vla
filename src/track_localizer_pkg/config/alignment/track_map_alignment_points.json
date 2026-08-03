@@ -1,0 +1,39 @@
+{
+  "point_order": "Same physical 4 points clicked in order on track_map_points and bev_image_points.",
+  "track_map_points": [
+    [
+      42,
+      3545
+    ],
+    [
+      8,
+      8
+    ],
+    [
+      4907,
+      768
+    ],
+    [
+      4956,
+      3235
+    ]
+  ],
+  "bev_image_points": [
+    [
+      20,
+      5
+    ],
+    [
+      235,
+      24
+    ],
+    [
+      157,
+      315
+    ],
+    [
+      7,
+      299
+    ]
+  ]
+}

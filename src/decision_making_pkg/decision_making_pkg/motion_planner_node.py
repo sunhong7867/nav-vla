@@ -5,6 +5,7 @@ from rclpy.qos import QoSHistoryPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import QoSReliabilityPolicy
 from std_msgs.msg import Bool
+from std_msgs.msg import Int32
 from std_msgs.msg import String
 
 from interfaces_pkg.msg import DetectionArray
@@ -19,6 +20,7 @@ SUB_TRAFFIC_LIGHT_TOPIC_NAME = "yolov8_traffic_light_info"
 SUB_LIDAR_OBSTACLE_TOPIC_NAME = "lidar_obstacle_info"
 SUB_MOTION_CONTROL_TOPIC_NAME = "motion_control_command"
 SUB_DIRECT_MOTION_TOPIC_NAME = "direct_motion_command"
+SUB_SPEED_COMMAND_TOPIC_NAME = "speed_command"
 PUB_TOPIC_NAME = "topic_control_signal"
 TIMER = 0.1
 TARGET_SPEED_RAW = 150
@@ -28,6 +30,7 @@ LANE_CHANGE_STEERING_GAIN = 2.0
 LANE_CHANGE_HOLD_SEC = 8.0
 CORNER_SLOWDOWN_STEERING = 2
 MAX_STEERING_COMMAND = 7
+MAX_SPEED_RAW = 250
 TARGET_POINT_INDEX_FROM_END = 10
 
 
@@ -57,6 +60,13 @@ class MotionPlanningNode(Node):
         self.sub_direct_motion_topic = self.declare_parameter(
             "sub_direct_motion_topic", SUB_DIRECT_MOTION_TOPIC_NAME
         ).value
+        self.sub_speed_command_topic = self.declare_parameter(
+            "sub_speed_command_topic", SUB_SPEED_COMMAND_TOPIC_NAME
+        ).value
+        self.speed_limit_raw = int(
+            self.declare_parameter("speed_limit_raw", MAX_SPEED_RAW).value
+        )
+        self.speed_limit_raw = max(0, min(MAX_SPEED_RAW, self.speed_limit_raw))
         self.direct_motion_timeout = float(
             self.declare_parameter("direct_motion_timeout", 0.3).value
         )
@@ -144,6 +154,12 @@ class MotionPlanningNode(Node):
             self.motion_control_qos_profile,
         )
         self.create_subscription(
+            Int32,
+            self.sub_speed_command_topic,
+            self.speed_command_callback,
+            self.motion_control_qos_profile,
+        )
+        self.create_subscription(
             MotionCommand,
             self.sub_direct_motion_topic,
             self.direct_motion_callback,
@@ -186,6 +202,10 @@ class MotionPlanningNode(Node):
         self.direct_motion_command = msg
         self.direct_motion_time = self.get_clock().now().nanoseconds * 1e-9
 
+    def speed_command_callback(self, msg):
+        self.speed_limit_raw = max(0, min(MAX_SPEED_RAW, int(msg.data)))
+        self.get_logger().info(f"speed limit: raw={self.speed_limit_raw}/250")
+
     def timer_callback(self):
         self.timer_count += 1
         direct_command = (
@@ -193,8 +213,12 @@ class MotionPlanningNode(Node):
         )
         if direct_command is not None:
             self.steering_command = int(direct_command.steering)
-            self.left_speed_command = int(direct_command.left_speed)
-            self.right_speed_command = int(direct_command.right_speed)
+            self.left_speed_command = min(
+                self.speed_limit_raw, max(0, int(direct_command.left_speed))
+            )
+            self.right_speed_command = min(
+                self.speed_limit_raw, max(0, int(direct_command.right_speed))
+            )
             msg = MotionCommand()
             msg.steering = self.steering_command
             msg.left_speed = self.left_speed_command
@@ -229,6 +253,7 @@ class MotionPlanningNode(Node):
             target_speed = self._target_speed_for_steering(self.steering_command)
             if in_lane_change:
                 target_speed = min(target_speed, self.lane_change_speed_raw)
+            target_speed = min(target_speed, self.speed_limit_raw)
             self.left_speed_command = target_speed
             self.right_speed_command = target_speed
 

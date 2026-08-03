@@ -12,6 +12,19 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def _rendering_environment_actions():
+    """Use a single EGL vendor on NVIDIA PRIME hybrid-GPU laptops."""
+    nvidia_egl = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+    if not os.path.exists(nvidia_egl):
+        return []
+    return [
+        SetEnvironmentVariable("__NV_PRIME_RENDER_OFFLOAD", "1"),
+        SetEnvironmentVariable("__GLX_VENDOR_LIBRARY_NAME", "nvidia"),
+        SetEnvironmentVariable("__VK_LAYER_NV_optimus", "NVIDIA_only"),
+        SetEnvironmentVariable("__EGL_VENDOR_LIBRARY_FILENAMES", nvidia_egl),
+    ]
+
+
 def _create_runtime_world(package_dir, workspace_root):
     source_world = os.path.join(package_dir, "worlds", "track.world")
     texture_candidates = [
@@ -138,6 +151,7 @@ def generate_launch_description():
     motion_lidar_topic = LaunchConfiguration("motion_lidar_topic")
 
     return LaunchDescription([
+        *_rendering_environment_actions(),
         DeclareLaunchArgument(
             "use_debug_visualizers",
             default_value="true",
@@ -242,11 +256,18 @@ def generate_launch_description():
             arguments=[
                 "/model/ego_vehicle/odometry@nav_msgs/msg/Odometry@gz.msgs.Odometry",
                 "/model/ego_vehicle/cmd_vel@geometry_msgs/msg/Twist@gz.msgs.Twist",
+                "/model/ego_vehicle/front_steer_cmd@std_msgs/msg/Float64@gz.msgs.Double",
             ],
             remappings=[
                 ("/model/ego_vehicle/odometry", "/odom"),
                 ("/model/ego_vehicle/cmd_vel", "/cmd_vel"),
+                ("/model/ego_vehicle/front_steer_cmd", "/front_steer_cmd"),
             ],
+            output="screen",
+        ),
+        Node(
+            package="simulation_pkg",
+            executable="ackermann_cmd_adapter_node",
             output="screen",
         ),
         Node(

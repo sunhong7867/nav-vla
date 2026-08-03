@@ -1,0 +1,82 @@
+# Every geometry field below must match the run that produced
+# track_map_aligned_homography.json (2026-07-25, LiDAR at the long-side centre).
+# Changing resolution or any forward_/lateral_ bound changes the BEV canvas, and
+# the node will then refuse to load the track masks rather than use a shifted
+# road mask. If you re-crop, re-pick the 4 points.
+
+track_pose_node:
+  ros__parameters:
+    # --- topics -----------------------------------------------------------
+    cloud_topic: /lidar_points
+    pose_topic: /track/vehicle_pose
+    status_topic: /track/vehicle_status
+    estop_topic: /track/geofence_estop
+    frame_id: track
+    child_frame_id: base_link
+
+    # --- BEV geometry (locked to the alignment run) -----------------------
+    resolution: 0.05          # m/px  -> 240 x 320 canvas
+    forward_min: 1.3
+    forward_max: 13.3
+    lateral_min: -7.0
+    lateral_max: 9.0
+    z_min: -2.2
+    z_max: 0.6
+
+    # --- floor plane ------------------------------------------------------
+    # The sensor is static, so this is fitted once on the first cloud and frozen.
+    height_mode: floor        # floor | raw_z
+    floor_candidate_z_min: -2.0
+    floor_candidate_z_max: 0.3
+    floor_plane_threshold: 0.03
+    floor_ransac_iters: 250
+    floor_max_points: 30000
+
+    # --- vehicle cluster gate --------------------------------------------
+    # RETUNE THESE FOR THE ACTUAL CAR. 0.03-0.35 m above the floor was set for a
+    # low RC chassis; on a 1/5 ride-on it captures only the lower body, and it is
+    # also the band a standing person's legs fall in. Measure the car's silhouette
+    # and widen to match, otherwise people near the track become candidates.
+    vehicle_height_min: 0.03
+    vehicle_height_max: 0.35
+    min_cluster_pixels: 5     # 5 px @0.05 m = 125 cm^2 of BEV footprint
+    max_cluster_pixels: 500
+    vehicle_mask_dilate: 1
+    max_tracking_jump_pixels: 80.0   # 4.0 m between frames at 10 Hz
+    prefer_near_previous: true
+    vehicle_track_area_only: true
+    vehicle_road_only: false
+    offroad_buffer_pixels: 8
+
+    # --- detection confirmation ------------------------------------------
+    confirm_frames: 3
+    confirm_distance_pixels: 20.0
+    max_missed_frames: 15
+
+    # --- registered track map --------------------------------------------
+    # track2.png is not interchangeable with track.png: the homography stores
+    # track_image_size 5228x3594 and is only valid for the image it was picked on.
+    track_map: /home/sh/ROS2_project/nav-vla/src/track_localizer_pkg/config/alignment/track2.png
+    homography_json: /home/sh/ROS2_project/nav-vla/src/track_localizer_pkg/config/alignment/track_map_aligned_homography.json
+
+    # --- tracking / heading (CTRV unscented filter) -----------------------
+    # accel/yaw_accel are the process noise. These two values were picked from a
+    # sweep: tightening them improves straight-line heading but makes corner
+    # entry strictly worse (0.05/0.08 peaks at 26 deg and needs 2.9 s to settle,
+    # against 17 deg / 1.3 s here). Since the straight already meets the target,
+    # the tuning favours transient response.
+    measurement_std: 0.06     # m, centroid noise; raise if the pose looks jittery
+    accel_std: 0.3            # m/s^2
+    yaw_accel_std: 0.5        # rad/s^2
+    min_speed_mps: 0.35       # below this, heading is held and flagged invalid
+    init_travel_m: 0.30       # travel needed before heading can be seeded
+    max_coast_seconds: 0.5    # coast through dropouts, then stop publishing
+
+    # --- safety -----------------------------------------------------------
+    lost_timeout_seconds: 0.5
+    estop_on_offroad: true
+    estop_on_lost: true
+
+    # Use the LiDAR's own stamp so a looping rosbag is detected and the filter
+    # is reset at the seam. Set false only if the driver publishes zero stamps.
+    use_sensor_stamp: true

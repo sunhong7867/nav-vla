@@ -11,11 +11,11 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import QoSReliabilityPolicy
 from std_msgs.msg import String
 
-from nav_vla.gz_pose import WorldPoseStream, query_world_pose, resolve_gz_bin
+from nav_vla_pkg.gz_pose import WorldPoseStream, query_world_pose, resolve_gz_bin
 
 
 DEFAULT_MAP_PATH = os.path.expanduser(
-    "~/ROS2_project/nav-vla/src/nav_vla/config/zone_map.yaml"
+    "~/ROS2_project/nav-vla/src/nav_vla_pkg/config/zone_map.yaml"
 )
 TARGET_YAW_STOP_LINE_ZONES = {"T3"}
 
