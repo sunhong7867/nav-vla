@@ -82,7 +82,7 @@ def generate_launch_description():
             actions=[
                 Node(
                     condition=IfCondition(use_avoidance),
-                    package="nav_vla",
+                    package="nav_vla_pkg",
                     executable="navigator_node",
                     parameters=[{
                         "use_obstacle_avoidance": True,

@@ -30,7 +30,7 @@ shows the returned reasoning text.
 For immediate connection testing, start the local Alpamayo-compatible adapter:
 
 ```bash
-ros2 run nav_vla alpamayo_teacher_server
+ros2 run nav_vla_pkg alpamayo_teacher_server
 ```
 
 This adapter does not load the 10B Alpamayo model. It only validates the `/judge`
@@ -38,7 +38,7 @@ contract and returns teacher-style reasoning from the ROS snapshot. Replace it
 with a real Alpamayo 1.5 inference server later.
 
 ```bash
-ros2 run nav_vla chat_gui_node --ros-args \
+ros2 run nav_vla_pkg chat_gui_node --ros-args \
   -p parser_backend:=action_policy \
   -p vla_judgment_backend:=alpamayo \
   -p alpamayo_endpoint:=http://127.0.0.1:8765/judge
@@ -79,8 +79,8 @@ bullet list. Every successful teacher response is saved automatically as both
 CSV and JSONL:
 
 ```text
-src/nav_vla/logs/alpamayo/alpamayo_judgments_YYYYMMDD_HHMMSS.csv
-src/nav_vla/logs/alpamayo/alpamayo_judgments_YYYYMMDD_HHMMSS.jsonl
+src/nav_vla_pkg/logs/alpamayo/alpamayo_judgments_YYYYMMDD_HHMMSS.csv
+src/nav_vla_pkg/logs/alpamayo/alpamayo_judgments_YYYYMMDD_HHMMSS.jsonl
 ```
 
 The CSV file is convenient for Excel/LibreOffice. The JSONL file keeps the ROS
@@ -91,11 +91,11 @@ become huge.
 You can change the log location:
 
 ```bash
-ros2 run nav_vla chat_gui_node --ros-args \
+ros2 run nav_vla_pkg chat_gui_node --ros-args \
   -p parser_backend:=action_policy \
   -p vla_judgment_backend:=alpamayo \
   -p alpamayo_endpoint:=http://127.0.0.1:8765/judge \
-  -p alpamayo_log_dir:=/home/sh/ROS2_project/nav-vla/src/nav_vla/logs/alpamayo
+  -p alpamayo_log_dir:=/home/sh/ROS2_project/nav-vla/src/nav_vla_pkg/logs/alpamayo
 ```
 
 ## Real Alpamayo 1.5 Server
@@ -147,7 +147,7 @@ access to that model page and retry after approval.
 Then start the real `/judge` server from the Alpamayo environment:
 
 ```bash
-python ~/ROS2_project/nav-vla/src/nav_vla/nav_vla/alpamayo_real_server.py \
+python ~/ROS2_project/nav-vla/src/nav_vla_pkg/nav_vla_pkg/alpamayo_real_server.py \
   --host 127.0.0.1 \
   --port 8765 \
   --model-id nvidia/Alpamayo-1.5-10B
@@ -156,7 +156,7 @@ python ~/ROS2_project/nav-vla/src/nav_vla/nav_vla/alpamayo_real_server.py \
 If `flash-attn` was skipped, start it with SDPA:
 
 ```bash
-python ~/ROS2_project/nav-vla/src/nav_vla/nav_vla/alpamayo_real_server.py \
+python ~/ROS2_project/nav-vla/src/nav_vla_pkg/nav_vla_pkg/alpamayo_real_server.py \
   --host 127.0.0.1 \
   --port 8765 \
   --model-id nvidia/Alpamayo-1.5-10B \

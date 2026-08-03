@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "_note": [
+    "English instruction bank for the sim VLA corpus.",
+    "",
+    "This file MUST be committed before any training run. The A3 ablation asks",
+    "whether the policy follows *language* or has memorised a handful of strings,",
+    "and that question is only answerable if the held-out phrasings were fixed",
+    "before the model saw the training set. Adding a phrase to `heldout` after",
+    "seeing eval results silently converts the test into a training set.",
+    "",
+    "Two independent splits:",
+    "  train    - used to build the training corpus",
+    "  heldout  - used ONLY for the evaluation corpus, never collected into train",
+    "",
+    "The split is over *surface form*, not over slot values. bay3 must appear in",
+    "both splits, otherwise a failure on held-out phrasing is indistinguishable",
+    "from a failure on an unseen goal. What differs is how the same request is",
+    "worded.",
+    "",
+    "Slot policy: every commanded degree of freedom must appear in the sentence.",
+    "If speed varies across episodes but is never spoken, the same sentence maps",
+    "to several different trajectories and the policy can only learn their mean.",
+    "That is why `speed_clause` is appended to every template rather than left",
+    "implicit."
+  ],
+
+  "lexicon": {
+    "ordinal": {
+      "_note": "The car enters the aisle heading +y with all four bays on its right, so bay1 is the one reached first. 'first' is defined by travel order, not by map index.",
+      "bay1": {
+        "train": ["first", "1st"],
+        "heldout": ["number one", "nearest"]
+      },
+      "bay2": {
+        "train": ["second", "2nd"],
+        "heldout": ["number two"]
+      },
+      "bay3": {
+        "train": ["third", "3rd"],
+        "heldout": ["number three"]
+      },
+      "bay4": {
+        "train": ["fourth", "4th"],
+        "heldout": ["number four", "last"]
+      }
+    },
+
+    "speed": {
+      "_note": "Three levels, mapped to target_speed in the driver. The words must be ordinal-consistent: slow < normal < fast, with no overlap in the numeric values.",
+      "slow": {
+        "train": ["slowly", "at a slow speed", "gently",
+                  "at low speed", "nice and slow", "keeping the speed down"],
+        "heldout": ["taking it easy", "at a crawl"]
+      },
+      "normal": {
+        "train": ["at a normal speed", "at your usual pace", "steadily",
+                  "at a comfortable pace", "at medium speed",
+                  "at cruising speed"],
+        "heldout": ["at a moderate pace", "at a regular speed"]
+      },
+      "fast": {
+        "train": ["quickly", "at a fast speed", "briskly",
+                  "fast", "at high speed", "picking up the pace"],
+        "heldout": ["at a good clip", "in a hurry"]
+      }
+    },
+
+    "lane": {
+      "_note": "lane1 is the inner lane (smaller radius), lane2 the outer. Verified against track_paths.json: both sit 1.58 m from the road centreline, 3.16 m apart.",
+      "lane1": {
+        "train": ["the inner lane", "the inside lane", "the left lane",
+                  "the left-hand lane", "the leftmost lane",
+                  "the inner driving lane"],
+        "heldout": ["the innermost lane", "the lane closer to the centre"]
+      },
+      "lane2": {
+        "train": ["the outer lane", "the outside lane", "the right lane",
+                  "the right-hand lane", "the rightmost lane",
+                  "the outer driving lane"],
+        "heldout": ["the outermost lane", "the lane closer to the edge"]
+      }
+    },
+
+    "zone": {
+      "_note": "Ring waypoints. Names come from zone_map.yaml; the spoken form drops the map's punctuation.",
+      "T2": { "train": ["T2", "checkpoint T2"], "heldout": ["marker T2", "the T2 point"] },
+      "M3": { "train": ["M3", "checkpoint M3"], "heldout": ["marker M3", "the M3 point"] },
+      "T3": { "train": ["T3", "checkpoint T3"], "heldout": ["marker T3", "the T3 point"] },
+      "T4": { "train": ["T4", "checkpoint T4"], "heldout": ["marker T4", "the T4 point"] },
+      "Start": { "train": ["Start", "the start line"], "heldout": ["the starting point", "the start marker"] },
+      "M2": { "train": ["M2", "checkpoint M2"], "heldout": ["marker M2", "the M2 point"] }
+    }
+  },
+
+  "templates": {
+    "park_bay": {
+      "_slots": ["ordinal", "speed"],
+      "train": [
+        "Park in the {ordinal} bay on the right, {speed}.",
+        "Pull into the {ordinal} parking space, {speed}.",
+        "Take the {ordinal} bay, {speed}.",
+        "Drive into the {ordinal} parking spot on your right, {speed}.",
+        "Park the car in the {ordinal} space, {speed}.",
+        "Head into the {ordinal} bay on the right and stop, {speed}.",
+        "Go park in the {ordinal} slot, {speed}.",
+        "Enter the {ordinal} parking bay, {speed}."
+      ],
+      "heldout": [
+        "Find the {ordinal} bay on your right and park there, {speed}.",
+        "I want you in the {ordinal} parking space, {speed}.",
+        "Bring the car to a stop inside the {ordinal} bay, {speed}.",
+        "Put it in the {ordinal} slot on the right, {speed}."
+      ]
+    },
+
+    "ring_goal": {
+      "_slots": ["zone", "lane", "speed"],
+      "train": [
+        "Drive to {zone} in {lane}, {speed}.",
+        "Follow {lane} to {zone}, {speed}.",
+        "Take {lane} and stop at {zone}, {speed}.",
+        "Go to {zone}, staying in {lane}, {speed}.",
+        "Head for {zone} along {lane}, {speed}.",
+        "Stay in {lane} and drive up to {zone}, {speed}.",
+        "Use {lane} to reach {zone}, {speed}.",
+        "Continue in {lane} until you reach {zone}, {speed}.",
+        "Take {lane} all the way to {zone}, {speed}.",
+        "Drive along {lane} and stop when you reach {zone}, {speed}.",
+        "Head over to {zone}, keeping in {lane}, {speed}.",
+        "Drive down {lane} to {zone}, {speed}.",
+        "Go along {lane} and halt at {zone}, {speed}.",
+        "Bring the car to {zone} via {lane}, {speed}.",
+        "Travel in {lane} to {zone}, {speed}."
+      ],
+      "heldout": [
+        "Make your way to {zone} using {lane}, {speed}.",
+        "Keep to {lane} and pull up at {zone}, {speed}.",
+        "I need you at {zone}; take {lane}, {speed}.",
+        "Proceed along {lane} as far as {zone}, {speed}."
+      ]
+    },
+
+    "cruise": {
+      "_note": "No endpoint in the sentence — the demo's 'start driving' case. Episodes end by duration while still moving; to_lerobot skips hold-frame padding when the terminal speed is not near zero.",
+      "_slots": ["lane", "speed"],
+      "train": [
+        "Start driving in {lane}, {speed}.",
+        "Just drive around the track in {lane}, {speed}.",
+        "Keep driving along {lane}, {speed}.",
+        "Cruise in {lane}, {speed}.",
+        "Drive around in {lane}, {speed}.",
+        "Keep going in {lane}, {speed}.",
+        "Take a lap in {lane}, {speed}.",
+        "Follow {lane} and keep driving, {speed}."
+      ],
+      "heldout": [
+        "Roam the track in {lane}, {speed}.",
+        "Keep circling in {lane}, {speed}.",
+        "Just keep moving along {lane}, {speed}."
+      ]
+    }
+  },
+
+  "speed_map": {
+    "_note": "RAW motor units 0..250 — the real car's native speed scale (m/s exists only past the sim Twist boundary: raw/255*5.0, see nav_vla_pkg/speed_control.py). The demonstrator is the tuned YOLO lane-follow stack (user's months of tuning; demonstrations must stay inside its envelope): motion_planner targets raw 150 on straights with a raw 100 corner floor, and /speed_command (Int32, raw) acts as a LIMIT clamp — so tiers are reachable purely via that limit: 70 caps below everything, 110 sits between corner floor and straight target, 150 releases the full tuned speed. Raising past 150 would need target_speed_raw at node startup and leaves tuned territory — only with the user. Corpus v2 used m/s {0.7, 1.2, 1.8} = raw {36, 61, 92} — entirely below the stack's operating band, which is why 'quickly' felt slow.",
+    "slow": 70,
+    "normal": 110,
+    "fast": 150
+  }
+}

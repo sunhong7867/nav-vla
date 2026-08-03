@@ -1080,68 +1080,14 @@
     <static>0</static>
     <allow_auto_disable>1</allow_auto_disable>
 
-    <!-- fl_axle -->
-    <!-- fr_axle -->
-
-    <!-- front_left_wheel_joint -->
+    <!-- The first axis steers; the second axis lets the wheel roll. -->
     <joint name='front_left_combined_joint' type='universal'>
       <parent>chassis</parent>
-      <child>front_left_wheel</child>  <!-- fl_axle -->
+      <child>front_left_wheel</child>
       <pose>0 0 0 -0.087266 0 0</pose>
       <axis>
         <xyz>0 0 1</xyz>
         <limit>
-          <!-- +- 50 degrees -->
-          <lower>-0.8727</lower> <!-- -0.5 후진 시 바퀴 회전 제한 -->
-          <upper>0.8727</upper>
-          <effort>1000000</effort> <!-- 100 회전 힘 제한 -->
-          <velocity>-1</velocity> <!-- 1 회전 속도 제한 -->
-        </limit>
-        <dynamics>
-          <spring_reference>0</spring_reference>
-          <spring_stiffness>0</spring_stiffness>
-          <damping>0</damping> <!-- 0.7 후진 시 더 높은 댐핑 -->
-          <friction>0</friction> <!-- 15.0 후진 시 더 높은 마찰 -->
-        </dynamics>
-      </axis>
-      <axis2>
-        <xyz>1 0 0</xyz>
-        <limit>
-          <lower>-1e+16</lower>
-          <upper>1e+16</upper>
-          <effort>1000000</effort> <!-- 100 회전 힘 제한 -->
-          <velocity>-1</velocity> <!-- 1 회전 속도 제한 -->
-        </limit>
-        <dynamics>
-          <spring_reference>0</spring_reference>
-          <spring_stiffness>0</spring_stiffness>
-          <damping>0</damping> <!-- 0.7 후진 시 더 높은 댐핑 -->
-          <friction>18.0474</friction>
-        </dynamics>
-      </axis2>
-      <physics>
-        <ode>
-          <limit>
-            <cfm>0</cfm>
-            <erp>0.2</erp> <!-- 0.9 후진 시 반응 조정 -->
-          </limit>
-          <suspension>
-            <cfm>0</cfm>  <!-- 0.02 서스펜션에 대한 물리적 반응 -->
-            <erp>0.2</erp>  <!-- 0.9 서스펜션 반응을 후진에 맞게 조정 -->
-          </suspension>
-        </ode>
-      </physics>
-    </joint>
-
-    <joint name='front_right_combined_joint' type='universal'> 
-      <parent>chassis</parent>
-      <child>front_right_wheel</child>  <!-- fr_axle -->
-      <pose>0 0 0 -0.087266 0 0</pose>
-      <axis>
-        <xyz>0 0 1</xyz>
-        <!-- <xyz>1 0 0</xyz> -->
-        <limit>
-          <!-- +- 50 degrees -->
           <lower>-0.8727</lower>
           <upper>0.8727</upper>
           <effort>1000000</effort>
@@ -1169,18 +1115,42 @@
           <friction>18.0474</friction>
         </dynamics>
       </axis2>
-      <physics>
-        <ode>
-          <limit>
-            <cfm>0</cfm>
-            <erp>0.2</erp>
-          </limit>
-          <suspension>
-            <cfm>0</cfm>
-            <erp>0.2</erp>
-          </suspension>
-        </ode>
-      </physics>
+    </joint>
+
+    <joint name='front_right_combined_joint' type='universal'>
+      <parent>chassis</parent>
+      <child>front_right_wheel</child>
+      <pose>0 0 0 -0.087266 0 0</pose>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <lower>-0.8727</lower>
+          <upper>0.8727</upper>
+          <effort>1000000</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <spring_reference>0</spring_reference>
+          <spring_stiffness>0</spring_stiffness>
+          <damping>0</damping>
+          <friction>0</friction>
+        </dynamics>
+      </axis>
+      <axis2>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-1e+16</lower>
+          <upper>1e+16</upper>
+          <effort>1000000</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <spring_reference>0</spring_reference>
+          <spring_stiffness>0</spring_stiffness>
+          <damping>0</damping>
+          <friction>18.0474</friction>
+        </dynamics>
+      </axis2>
     </joint>
 
     <!--  -->
@@ -1361,6 +1331,66 @@
           </noise>
         </camera>
 
+      </sensor>
+
+      <!--
+        Wide camera for VLA training. A SECOND sensor rather than a change to
+        `prius_cam`, because the YOLO lane pipeline (track_rois.json,
+        lane_info_extractor) is calibrated against that view and the 619-episode
+        corpus was recorded through it. Both stay valid.
+
+        Why it exists: with the 62 deg lens, the parking bay the car is turning
+        into is 45 deg off-axis at the moment of the turn — outside the 31 deg
+        half-angle, so the decisive frame does not contain the target. A policy
+        could then only learn "turn right after N metres", which is memorised
+        timing, not language grounded in the image.
+
+          100 deg hfov -> 50 deg half-angle
+          83.6 deg vfov (widening hfov widens this too)
+
+        The useful cue is not the target bay itself, which sits at the extreme
+        right edge even at 100 deg. It is how many bay openings remain ahead:
+        at the bay2 turn-in those are 30.6 and 22.7 deg off-axis, comfortably in
+        frame here and outside the narrow lens's 31 deg half-angle. Counting
+        what is left is a single-frame cue; counting what has gone past is not.
+
+        Position, not just angle. Pitching the roof camera down far enough to
+        cut the sky filled the lower HALF of the frame with the car's own bonnet
+        and cockpit — trading one dead region for a bigger one. Moving the
+        sensor 2.6 m forward along its own axis puts it at the front bumper
+        (the model's nose is at y = -2.24), where there is no bodywork to see.
+
+        Measured on the ring, fraction of frame carrying information:
+
+          narrow lens, roof   52%   (48% sky)
+          this one            71%   (29% sky, 0% bodywork)
+
+        Pose is relative to `camera_frame`, which already carries 0.1 rad of
+        down-pitch, so 0.30 here gives 0.40 rad (22.9 deg) total.
+      -->
+      <sensor name='vla_camera' type='camera'>
+        <always_on>1</always_on>
+        <visualize>0</visualize>
+        <update_rate>30</update_rate>
+        <topic>vla_camera</topic>
+        <pose>2.6 0 -0.85 0 0.30 0</pose>
+        <camera name='vla_cam'>
+          <horizontal_fov>1.74533</horizontal_fov> <!-- 100 deg -->
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.03</near>
+            <far>100</far>
+          </clip>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>0.007</stddev>
+          </noise>
+        </camera>
       </sensor>
       <self_collide>0</self_collide>
       <enable_wind>0</enable_wind>
@@ -1800,6 +1830,9 @@
       </physics>
     </joint>    
 
+    <!-- Preserve the original learned-policy dynamics. DiffDrive owns vehicle
+         motion; the front steering controllers below are visual only because
+         the wheel collision shapes are spheres. -->
     <plugin
       filename="gz-sim-diff-drive-system"
       name="gz::sim::systems::DiffDrive">
@@ -1818,6 +1851,42 @@
       <min_angular_velocity>-2</min_angular_velocity>
       <topic>/model/ego_vehicle/cmd_vel</topic>
       <odom_topic>/model/ego_vehicle/odometry</odom_topic>
+    </plugin>
+
+    <!-- Both controllers subscribe to exactly the same desired angle.  The
+         front wheels can therefore only point in the same direction. -->
+    <plugin
+      filename="gz-sim-joint-position-controller-system"
+      name="gz::sim::systems::JointPositionController">
+      <joint_name>front_left_combined_joint</joint_name>
+      <joint_index>0</joint_index>
+      <topic>/model/ego_vehicle/front_steer_cmd</topic>
+      <p_gain>1500</p_gain>
+      <d_gain>100</d_gain>
+      <cmd_max>10000</cmd_max>
+      <cmd_min>-10000</cmd_min>
+      <initial_position>0</initial_position>
+    </plugin>
+
+    <plugin
+      filename="gz-sim-joint-state-publisher-system"
+      name="gz::sim::systems::JointStatePublisher">
+      <joint_name>front_left_combined_joint</joint_name>
+      <joint_name>front_right_combined_joint</joint_name>
+      <joint_name>rear_left_wheel_joint</joint_name>
+      <joint_name>rear_right_wheel_joint</joint_name>
+    </plugin>
+    <plugin
+      filename="gz-sim-joint-position-controller-system"
+      name="gz::sim::systems::JointPositionController">
+      <joint_name>front_right_combined_joint</joint_name>
+      <joint_index>0</joint_index>
+      <topic>/model/ego_vehicle/front_steer_cmd</topic>
+      <p_gain>1500</p_gain>
+      <d_gain>100</d_gain>
+      <cmd_max>10000</cmd_max>
+      <cmd_min>-10000</cmd_min>
+      <initial_position>0</initial_position>
     </plugin>
 
     <link name="base_link">

@@ -13,6 +13,24 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
+def _rendering_environment_actions():
+    """Select one GLVND vendor on NVIDIA PRIME laptops.
+
+    Letting Ogre probe both the AMD display GPU and the NVIDIA offload GPU can
+    create a half-initialized EGL context (``driver (null)``), which makes
+    dynamic model meshes flicker even though the Gazebo entity is stable.
+    """
+    nvidia_egl = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+    if not os.path.exists(nvidia_egl):
+        return []
+    return [
+        SetEnvironmentVariable("__NV_PRIME_RENDER_OFFLOAD", "1"),
+        SetEnvironmentVariable("__GLX_VENDOR_LIBRARY_NAME", "nvidia"),
+        SetEnvironmentVariable("__VK_LAYER_NV_optimus", "NVIDIA_only"),
+        SetEnvironmentVariable("__EGL_VENDOR_LIBRARY_FILENAMES", nvidia_egl),
+    ]
+
+
 def _create_runtime_world(package_dir, workspace_root):
     source_world = os.path.join(package_dir, "worlds", "track.world")
     texture_candidates = [
@@ -128,6 +146,7 @@ def generate_launch_description():
     yolo_model_path = os.path.join(workspace_root, "best_cap.pt")
     use_perception_pipeline = LaunchConfiguration("use_perception_pipeline")
     use_driver = LaunchConfiguration("use_driver")
+    use_policy = LaunchConfiguration("use_policy")
     use_camera = LaunchConfiguration("use_camera")
     use_lane_mode_gui = LaunchConfiguration("use_lane_mode_gui")
     use_debug_visualizers = LaunchConfiguration("use_debug_visualizers")
@@ -138,6 +157,7 @@ def generate_launch_description():
     use_lane_tuning_gui = LaunchConfiguration("use_lane_tuning_gui")
 
     return LaunchDescription([
+        *_rendering_environment_actions(),
         DeclareLaunchArgument(
             "use_perception_pipeline",
             default_value="true",
@@ -148,6 +168,12 @@ def generate_launch_description():
             default_value="true",
             description="Run a built-in /cmd_vel driver. Set false (with use_perception_pipeline:=false) "
                         "for a bare sim so an external controller (e.g. zone_navigator) owns /cmd_vel.",
+        ),
+        DeclareLaunchArgument(
+            "use_policy",
+            default_value="false",
+            description="Launch nav_vla_pkg policy_node as the sole /cmd_vel controller. "
+                        "This disables the built-in simple and YOLO motion drivers.",
         ),
         DeclareLaunchArgument(
             "use_camera",
@@ -244,17 +270,52 @@ def generate_launch_description():
                 ),
             ],
         ),
+        # Simulator clock. Without this, `use_sim_time:=true` leaves a node's
+        # clock pinned at 0 forever — it waits for /clock and nothing publishes it.
+        # The episode recorder writes its pose/control stamps from the node clock,
+        # so the whole stream came out as t=0.0 and the offline join was impossible.
+        # Image stamps were unaffected (they carry the simulator's own header),
+        # which is exactly what made the failure look like a partial success.
+        Node(
+            package="ros_gz_bridge",
+            executable="parameter_bridge",
+            arguments=[
+                "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
+            ],
+            output="screen",
+        ),
+        # Ground-truth pose of every moving entity, native and stamped by DDS
+        # rather than scraped from `gz topic -e` text. The text path ran at a
+        # ragged 25 Hz with gaps up to 562 ms, which is far too coarse to
+        # differentiate into SE(2) action labels; this bridge holds 58.8 Hz with
+        # 0.14 ms jitter. /odom cannot be used instead — it is wheel-integrated
+        # and does not follow a teleport, so it desynchronises at every reset.
+        Node(
+            package="ros_gz_bridge",
+            executable="parameter_bridge",
+            arguments=[
+                "/world/default/dynamic_pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V",
+            ],
+            output="screen",
+        ),
         Node(
             package="ros_gz_bridge",
             executable="parameter_bridge",
             arguments=[
                 "/model/ego_vehicle/odometry@nav_msgs/msg/Odometry@gz.msgs.Odometry",
                 "/model/ego_vehicle/cmd_vel@geometry_msgs/msg/Twist@gz.msgs.Twist",
+                "/model/ego_vehicle/front_steer_cmd@std_msgs/msg/Float64@gz.msgs.Double",
             ],
             remappings=[
                 ("/model/ego_vehicle/odometry", "/odom"),
                 ("/model/ego_vehicle/cmd_vel", "/cmd_vel"),
+                ("/model/ego_vehicle/front_steer_cmd", "/front_steer_cmd"),
             ],
+            output="screen",
+        ),
+        Node(
+            package="simulation_pkg",
+            executable="ackermann_cmd_adapter_node",
             output="screen",
         ),
         Node(
@@ -263,9 +324,14 @@ def generate_launch_description():
             executable="parameter_bridge",
             arguments=[
                 "/camera@sensor_msgs/msg/Image@gz.msgs.Image",
+                # Wide lens used for VLA recording. Bridged alongside rather than
+                # instead of /camera: the YOLO pipeline is calibrated to the
+                # narrow view and both are needed in the same session.
+                "/vla_camera@sensor_msgs/msg/Image@gz.msgs.Image",
             ],
             remappings=[
                 ("/camera", "/camera/image_raw"),
+                ("/vla_camera", "/vla_camera/image_raw"),
             ],
             output="screen",
         ),
@@ -309,14 +375,18 @@ def generate_launch_description():
                 Node(
                     condition=IfCondition(PythonExpression([
                         "'", use_perception_pipeline, "' == 'false' and '",
-                        use_driver, "' == 'true'",
+                        use_driver, "' == 'true' and '",
+                        use_policy, "' == 'false'",
                     ])),
                     package="simulation_pkg",
                     executable="simple_track_driver_node",
                     output="screen",
                 ),
                 Node(
-                    condition=IfCondition(use_perception_pipeline),
+                    condition=IfCondition(PythonExpression([
+                        "'", use_perception_pipeline, "' == 'true' and '",
+                        use_policy, "' == 'false'",
+                    ])),
                     package="camera_perception_pkg",
                     executable="yolov8_node",
                     parameters=[{
@@ -330,7 +400,10 @@ def generate_launch_description():
                     output="screen",
                 ),
                 Node(
-                    condition=IfCondition(use_perception_pipeline),
+                    condition=IfCondition(PythonExpression([
+                        "'", use_perception_pipeline, "' == 'true' and '",
+                        use_policy, "' == 'false'",
+                    ])),
                     package="camera_perception_pkg",
                     executable="lane_info_extractor_node",
                     parameters=[{
@@ -403,21 +476,39 @@ def generate_launch_description():
                     output="screen",
                 ),
                 Node(
-                    condition=IfCondition(use_perception_pipeline),
+                    condition=IfCondition(PythonExpression([
+                        "'", use_perception_pipeline, "' == 'true' and '",
+                        use_policy, "' == 'false'",
+                    ])),
                     package="decision_making_pkg",
                     executable="path_planner_node",
                     output="screen",
                 ),
                 Node(
-                    condition=IfCondition(use_perception_pipeline),
+                    condition=IfCondition(PythonExpression([
+                        "'", use_perception_pipeline, "' == 'true' and '",
+                        use_policy, "' == 'false'",
+                    ])),
                     package="decision_making_pkg",
                     executable="motion_planner_node",
                     output="screen",
                 ),
                 Node(
-                    condition=IfCondition(use_perception_pipeline),
+                    condition=IfCondition(PythonExpression([
+                        "'", use_perception_pipeline, "' == 'true' and '",
+                        use_policy, "' == 'false'",
+                    ])),
                     package="simulation_pkg",
                     executable="sim_simulation_sender_node",
+                    output="screen",
+                ),
+                Node(
+                    condition=IfCondition(use_policy),
+                    package="nav_vla_pkg",
+                    executable="policy_node",
+                    parameters=[{
+                        "initial_lane": "lane2",
+                    }],
                     output="screen",
                 ),
             ],

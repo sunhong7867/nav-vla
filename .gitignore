@@ -36,10 +36,10 @@ venv/
 /src/guardedlc/eval/results.zip
 /src/guardedlc/guardedlc/data/*.csv
 # nav-vla data-engine episode recordings (frames + jsonl)
-/src/nav_vla/data/
-/src/nav_vla/data_obstacle/
-/src/nav_vla/logs/
-/src/nav_vla/train/checkpoints/
+/src/nav_vla_pkg/data/
+/src/nav_vla_pkg/data_obstacle/
+/src/nav_vla_pkg/logs/
+/src/nav_vla_pkg/train/checkpoints/
 
 # Model weights are intentionally not uploaded to GitHub.
 *.pt
@@ -55,3 +55,19 @@ venv/
 # OS/editor noise
 .DS_Store
 Thumbs.db
+
+# recorder v2 episode captures (30 Hz source frames — tens of GB)
+/src/nav_vla_pkg/data_v2/
+
+# SmolVLA corpus captures and generated evaluation reports
+/src/nav_vla_pkg/data_v3y/
+/src/nav_vla_pkg/data_actions/
+/cmi_*.json
+/counterfactual_report.json
+/g1_reset_determinism.json
+/parking_cf*.json
+/verify_report*.json
+
+# LiDAR alignment GUI generated outputs (keep directory placeholders)
+/tools/lidar_alignment_gui/output/config/*.json
+/tools/lidar_alignment_gui/output/images/*.png
