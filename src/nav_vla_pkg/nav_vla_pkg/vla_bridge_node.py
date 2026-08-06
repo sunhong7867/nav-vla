@@ -182,6 +182,14 @@ class VlaBridge(Node):
         self.seed = int(self.declare_parameter("seed", 0).value)
         self.timeout_ms = int(self.declare_parameter("req_timeout_ms", 2000).value)
         self.max_speed = float(self.declare_parameter("max_speed", 2.0).value)
+        # Demo speed shaping (both default OFF). The policy under-runs the
+        # commanded tier by ~15-25% and steps at chunk refills; the teacher's
+        # lane logic assumes tier speed, so driving slow also degrades
+        # steering. scale multiplies the decoded v; slew caps |dv| per action
+        # tick (30 Hz) — 0.08 = 2.4 m/s^2, above any learned braking ramp.
+        # Watchdog zeroing bypasses both (safety path must stay instant).
+        self.speed_scale = float(self.declare_parameter("speed_scale", 1.0).value)
+        self.speed_slew = float(self.declare_parameter("speed_slew", 0.0).value)
 
         self.bridge = CvBridge()
         self.obs = LatestObservation()
@@ -347,17 +355,32 @@ class VlaBridge(Node):
         # k = w/v by the same fraction. Replaying the ORACLE'S OWN actions
         # missed the bay by 4 m laterally — the under-turn signature that was
         # being blamed on the policy.
-        v = dx / dt
-        w = dyaw / dt
+        v_raw = dx / dt
+        w_raw = dyaw / dt
+        # The action's path geometry lives in its curvature k = w/v. Any speed
+        # shaping below must preserve k (same line, different pace), so w is
+        # recomputed from k after v is final — scaling v alone would flatten
+        # every turn by the same factor.
+        k_raw = w_raw / v_raw if abs(v_raw) > 1e-3 else None
+        v = v_raw * self.speed_scale
         # Clamp to what the vehicle can physically execute. This shapes the
         # command, so it is declared in /vla/status rather than applied quietly.
         override = "none"
         v = max(-self.max_speed, min(self.max_speed, v))
-        if abs(v) > 1e-3:
-            k = w / v
+        if self.speed_slew > 0.0:
+            v_prev = self._last_cmd[0]
+            lo, hi = v_prev - self.speed_slew, v_prev + self.speed_slew
+            if v < lo or v > hi:
+                v = min(max(v, lo), hi)
+                override = "slew"
+        if k_raw is not None:
+            k = k_raw
             if abs(k) > MAX_CURVATURE:
-                w = math.copysign(MAX_CURVATURE, k) * v
+                k = math.copysign(MAX_CURVATURE, k)
                 override = "clamp_curvature"
+            w = k * v
+        else:
+            w = w_raw
         self._publish(v, w, override=override)
 
     def _publish(self, v, w, override="none"):
