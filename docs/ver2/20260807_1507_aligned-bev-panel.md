@@ -40,6 +40,14 @@ ros2 run track_localizer_pkg aligned_bev_publisher     # ★신규 — 대시보
 보인다"는 혼동**을 유발 — 제거했다. 좌하단은 항상 정합 BEV 패널이고,
 미수신이면 Waiting 표시. `TrackMapWidget`도 함께 삭제 (git 이력에 보존).
 
+## 추가 (15:17) — 내레이션 로그 연동 + 높이 정렬
+
+- 로그창이 `/vla/narration`(시뮬 GUI와 동일 소스, `vla_narrator.py`)을 구독해
+  🚗 프리픽스로 상황 라인 표시 — "M2 접근 · 좌회전 예정" 등. 합성 발행으로
+  표시 검증. **실차에서는 narrator에 pose 입력 어댑터(TF→/track pose)가
+  붙어야 살아난다** — 후속 항목
+- 정합 BEV 패널과 로그창 높이 340으로 정렬
+
 ## 미해결
 
 - 정합 BEV 위에 차량 pose 마커는 안 얹음 — 점군에 차량이 이미 보이므로

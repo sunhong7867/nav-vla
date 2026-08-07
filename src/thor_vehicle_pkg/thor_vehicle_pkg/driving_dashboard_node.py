@@ -184,6 +184,11 @@ class DashboardROSNode(Node):
                                  self._cb_status, qos_reliable)
         self.create_subscription(String, "/vla/instruction",
                                  lambda m: self.buf_instr.appendleft(m.data), qos_latched)
+        # 내레이터 한국어 상황 라인 ("M2 접근 · 좌회전 예정" 등) — 시뮬 GUI와
+        # 동일 소스. 실차에서는 narrator에 pose 어댑터가 붙은 뒤 살아난다.
+        self.buf_narration = deque(maxlen=8)
+        self.create_subscription(String, "/vla/narration",
+                                 lambda m: self.buf_narration.append(m.data), 10)
         self.create_subscription(Twist, "/cmd_vel",
                                  lambda m: self.buf_cmd_vel.appendleft(m), qos_reliable)
         self.create_subscription(MotionCommand, "topic_control_signal",
@@ -468,6 +473,7 @@ class DashboardWindow(QMainWindow):
         bottom_split.addWidget(self._bev_aligned)
 
         chat_panel = QWidget()
+        chat_panel.setFixedHeight(340)   # ★정합 BEV 패널과 동일 높이
         chat_layout = QVBoxLayout(chat_panel)
         chat_layout.setContentsMargins(4, 0, 0, 0)
         chat_layout.setSpacing(2)
@@ -492,7 +498,9 @@ class DashboardWindow(QMainWindow):
         chat_layout.addLayout(chat_input_row)
 
         bottom_split.addWidget(chat_panel, stretch=1)
-        left_layout.addLayout(bottom_split, stretch=1)
+        bottom_split.setAlignment(self._bev_aligned, Qt.AlignTop)
+        left_layout.addLayout(bottom_split)
+        left_layout.addStretch(1)
 
         splitter.addWidget(left_panel)
 
@@ -651,6 +659,9 @@ class DashboardWindow(QMainWindow):
         if self._ros.buf_instr:
             self._instruction = self._ros.buf_instr.popleft()
             self._append_chat("<", f"[INSTR] {self._instruction or '(정지)'}", C_GREEN)
+        # 내레이터 상황 라인 (시뮬 GUI와 동일한 "접근·감속" 중계)
+        while self._ros.buf_narration:
+            self._append_chat("🚗", self._ros.buf_narration.popleft(), C_TEXT)
 
         # 모드 배지: estop > pose lost > driving > idle
         # cmd_vel은 10 Hz 발행 vs 15 Hz 틱이라 빈 틱이 생긴다 — 최근 1 s
