@@ -28,6 +28,9 @@ def generate_launch_description():
         DeclareLaunchArgument("baud", default_value="115200"),
         DeclareLaunchArgument("require_pose", default_value="false"),
         DeclareLaunchArgument("cap_speed_int", default_value="100"),
+        # wheels-up 검증으로 확정한 조향 부호 (+1|-1). 검증 전 기본 +1을
+        # 신뢰하지 말 것 — thor_car_demo.sh full 모드가 명시를 강제한다.
+        DeclareLaunchArgument("steer_sign", default_value="1"),
     ]
     camera = Node(
         package="thor_vehicle_pkg",
@@ -48,6 +51,7 @@ def generate_launch_description():
         parameters=[{
             "require_pose": LaunchConfiguration("require_pose"),
             "cap_speed_int": LaunchConfiguration("cap_speed_int"),
+            "steer_sign": LaunchConfiguration("steer_sign"),
         }],
     )
     serial_sender = Node(

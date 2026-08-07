@@ -27,6 +27,7 @@ setup(
             'serial_sender_node = thor_vehicle_pkg.serial_sender_node:main',
             'cmd_vel_motion_adapter_node = '
             'thor_vehicle_pkg.cmd_vel_motion_adapter_node:main',
+            'wheels_up_test = thor_vehicle_pkg.wheels_up_test:main',
         ],
     },
 )

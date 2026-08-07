@@ -67,7 +67,7 @@ from rclpy.qos import (
     QoSProfile,
     QoSReliabilityPolicy,
 )
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import String
 
 SIM_WHEEL_BASE = 2.86      # ackermann_cmd_adapter_node.py:23
@@ -183,6 +183,12 @@ class VlaBridge(Node):
         self.stale_factor = float(
             self.declare_parameter("stale_factor", 1.5).value)
         self.jpeg_quality = int(self.declare_parameter("jpeg_quality", 88).value)
+        # 실차(thor_vehicle_pkg camera_publisher)는 JPEG CompressedImage를
+        # 발행한다. true면 image_topic에서 CompressedImage를 구독해 재인코딩
+        # 없이 그대로 서버에 넘긴다 — raw 경유 대비 프레임당 디코드+인코드
+        # 1회씩 절약. 시뮬(raw Image)은 기본값 false로 기존 경로 그대로.
+        self.compressed_image = bool(
+            self.declare_parameter("compressed_image", False).value)
         self.seed = int(self.declare_parameter("seed", 0).value)
         self.timeout_ms = int(self.declare_parameter("req_timeout_ms", 2000).value)
         self.max_speed = float(self.declare_parameter("max_speed", 2.0).value)
@@ -259,8 +265,13 @@ class VlaBridge(Node):
                                         durability=QoSDurabilityPolicy.VOLATILE,
                                         depth=1)
 
-        self.create_subscription(Image, self.image_topic, self._img_cb,
-                                 sensor_qos, callback_group=sensor_cg)
+        if self.compressed_image:
+            self.create_subscription(CompressedImage, self.image_topic,
+                                     self._compressed_img_cb, sensor_qos,
+                                     callback_group=sensor_cg)
+        else:
+            self.create_subscription(Image, self.image_topic, self._img_cb,
+                                     sensor_qos, callback_group=sensor_cg)
         self.create_subscription(Odometry, self.odom_topic, self._odom_cb,
                                  sensor_qos, callback_group=sensor_cg)
         self.create_subscription(String, "/vla/instruction", self._instr_cb,
@@ -284,7 +295,8 @@ class VlaBridge(Node):
         self._infer_thread.start()
 
         self.get_logger().info(
-            f"vla_bridge -> {self.endpoint}, image={self.image_topic}, "
+            f"vla_bridge -> {self.endpoint}, image={self.image_topic}"
+            f"{' (compressed)' if self.compressed_image else ''}, "
             f"{self.rate_hz:.0f} Hz, chunk={self.chunk_len}, "
             f"splice overlap={self.splice_overlap}")
 
@@ -301,6 +313,17 @@ class VlaBridge(Node):
         if ok:
             t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             self.obs.put_image(buf.tobytes(), t)
+
+    def _compressed_img_cb(self, msg):
+        # 이미 JPEG — 그대로 전달. format 필드는 신뢰하지 않고 매직바이트로
+        # 확인한다 (JPEG 외 포맷은 서버가 디코드하지 못한다).
+        data = bytes(msg.data)
+        if not data.startswith(b"\xff\xd8"):
+            self.get_logger().warn(
+                f"JPEG 아님 on {self.image_topic} (format={msg.format!r})")
+            return
+        t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        self.obs.put_image(data, t)
 
     def _odom_cb(self, msg):
         v = msg.twist.twist.linear.x
