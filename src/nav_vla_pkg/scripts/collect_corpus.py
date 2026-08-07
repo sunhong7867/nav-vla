@@ -182,13 +182,21 @@ def connector_starts(paths, n, rng, lat_jitter, yaw_jitter_deg,
     return out
 
 
-def lane_starts(paths, n, rng, lat_jitter, yaw_jitter_deg):
-    """Sample start poses anywhere on the ring lanes (for ring-goal episodes)."""
+def lane_starts(paths, n, rng, lat_jitter, yaw_jitter_deg, windows=None):
+    """Sample start poses anywhere on the ring lanes (for ring-goal episodes).
+
+    windows: optional list of (lo, hi) ring-index ranges; when given, start
+    indices are drawn only from those ranges (used to target sparse spots
+    like the parking OUT-road junction upstream)."""
     out = []
     for _ in range(n):
         lane = rng.choice(["lane1", "lane2"])
         pts = [tuple(p) for p in paths[lane]]
-        i = rng.randrange(len(pts))
+        if windows:
+            lo, hi = windows[rng.randrange(len(windows))]
+            i = rng.randrange(lo, hi + 1) % len(pts)
+        else:
+            i = rng.randrange(len(pts))
         x, y = pts[i]
         nx, ny = pts[(i + 1) % len(pts)]
         heading = math.atan2(ny - y, nx - x)
@@ -366,14 +374,47 @@ def build_plan(args, paths, bank, rng):
     # The demo's first utterance is "start driving", not "drive to T2". These
     # episodes end by duration (the collector cancels mid-cruise), so the
     # demonstration never contains a stop — to_lerobot must not hold-pad them.
-    for gi, sp in enumerate(lane_starts(
-            paths, args.cruise_groups, rng, args.lat_jitter, args.yaw_jitter)):
+    cruise_windows = None
+    if args.start_windows:
+        cruise_windows = [tuple(int(v) for v in w.split("-"))
+                          for w in args.start_windows.split(",")]
+    if args.start_poses_file:
+        # DAgger-style corrections: explicit start poses sampled from the
+        # POLICY'S OWN error states (position + heading where it drifted off
+        # the lane line). No jitter — the pose already is the perturbation.
+        # Each entry: {"x", "y", "heading", "lane"}. The teacher recovers from
+        # exactly the states the current policy visits, which is the data
+        # plain jittered starts cannot provide.
+        entries = json.load(open(args.start_poses_file))
+        cruise_sps = []
+        for e in entries:
+            pts = [tuple(p) for p in paths[e["lane"]]]
+            i = min(range(len(pts)),
+                    key=lambda k: (pts[k][0]-e["x"])**2 + (pts[k][1]-e["y"])**2)
+            cruise_sps.append({"x": e["x"], "y": e["y"],
+                               "heading": e["heading"],
+                               "model_yaw": wrap_pi(e["heading"] - YAW_OFFSET),
+                               "lane_index": i, "lane": e["lane"],
+                               "lateral_m": e.get("dev", 0.0),
+                               "dagger": True})
+    else:
+        cruise_sps = lane_starts(
+            paths, args.cruise_groups, rng, args.lat_jitter, args.yaw_jitter,
+            windows=cruise_windows)
+    for gi, sp in enumerate(cruise_sps):
         level = speeds[gi % len(speeds)]
         # Vary the window so episode length is not a hidden constant the
         # policy could latch onto instead of the instruction.
         dur = [18.0, 24.0, 30.0][(gi // len(speeds)) % 3]
         variants = []
-        for vi, lane in enumerate(["lane1", "lane2"]):
+        if sp.get("dagger"):
+            cruise_lanes = [sp["lane"]]  # instruction must match the lane
+            # the policy was following when it drifted into this state
+        elif args.cruise_lane == "both":
+            cruise_lanes = ["lane1", "lane2"]
+        else:
+            cruise_lanes = [args.cruise_lane]
+        for vi, lane in enumerate(cruise_lanes):
             slots = {"lane": lane, "speed": level}
             text, tpl, fill = bank.render("cruise", slots)
             variants.append({
@@ -407,10 +448,16 @@ def build_plan(args, paths, bank, rng):
 
 class Collector(Node):
 
-    def __init__(self, args, plan):
+    def __init__(self, args, plan, ring_pts=None):
         super().__init__("corpus_collector")
         self.args = args
         self.plan = plan
+        # Coarse ring polyline for the off-ring guard. The teacher's lane
+        # follower can latch onto the parking OUT-road at the junction during
+        # goal-less cruises and drive off the ring; duration-terminated
+        # episodes would still be marked success and poison the corpus
+        # (found 2026-08-04: 16 such episodes across v3y/supp/y5j).
+        self.ring_pts = ring_pts or []
         self.gz = resolve_gz_bin("")
         self.goal_pub = self.create_publisher(String, "/oracle_goal", 10)
         self.rec_pub = self.create_publisher(String, "/recorder/command", 10)
@@ -603,8 +650,22 @@ class Collector(Node):
         cruise_s = variant.get("cruise_s")
         t0 = time.monotonic()
         last_xy, last_move = self.tf, t0
+        off_ring_since = None
         while time.monotonic() - t0 < variant["timeout_s"]:
             rclpy.spin_once(self, timeout_sec=0.02)
+            if self.ring_pts and self.tf and variant["intent_id"] != "park_bay":
+                x, y = self.tf[0], self.tf[1]
+                d_ring = min(math.hypot(px - x, py - y)
+                             for px, py in self.ring_pts)
+                if d_ring > 3.0:
+                    if off_ring_since is None:
+                        off_ring_since = time.monotonic()
+                    elif time.monotonic() - off_ring_since > 2.0:
+                        termination, detail = "off_ring", (
+                            f"{d_ring:.1f} m from ring for >2 s")
+                        break
+                else:
+                    off_ring_since = None
             if cruise_s is not None and time.monotonic() - t0 >= cruise_s:
                 # Cruise has no arrival; the window elapsing IS success. The
                 # cancel below then cuts the driver off mid-drive on purpose.
@@ -763,6 +824,17 @@ def main():
                         "positional (p0000, s0000...) and would otherwise repeat, "
                         "silently merging two unrelated start poses into one "
                         "counterfactual group.")
+    p.add_argument("--start-poses-file", default=None,
+                   help="JSON list of {x, y, heading, lane} start poses for "
+                        "cruise groups (DAgger corrections — no jitter added); "
+                        "overrides --cruise-groups count and --start-windows")
+    p.add_argument("--cruise-lane", default="both",
+                   choices=["both", "lane1", "lane2"],
+                   help="restrict cruise variants to one lane (corpus "
+                        "rebalancing packs; breaks lane counterfactual pairs)")
+    p.add_argument("--start-windows", default=None,
+                   help="comma list of LO-HI ring-index windows restricting "
+                        "cruise start poses, e.g. '120-180,290-350'")
     p.add_argument("--seed", type=int, default=20260728)
     p.add_argument("--lat-jitter", type=float, default=0.6,
                    help="metres of perpendicular start offset")
@@ -831,7 +903,8 @@ def main():
         return 0
 
     rclpy.init()
-    node = Collector(args, plan)
+    ring_pts = [tuple(p) for p in paths["ring_center"][::2]]
+    node = Collector(args, plan, ring_pts=ring_pts)
     try:
         return node.run()
     except KeyboardInterrupt:

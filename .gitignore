@@ -71,3 +71,5 @@ Thumbs.db
 # LiDAR alignment GUI generated outputs (keep directory placeholders)
 /tools/lidar_alignment_gui/output/config/*.json
 /tools/lidar_alignment_gui/output/images/*.png
+models/
+eval_out/

@@ -1,0 +1,100 @@
+{
+  "homography_track_to_bev": [
+    [
+      0.06047298648661527,
+      -0.0024347769506584513,
+      0.06036231071036825
+    ],
+    [
+      0.0034496072773819585,
+      0.061181510656062844,
+      0.26236500430813636
+    ],
+    [
+      -8.295651218847093e-07,
+      -9.599049058426527e-07,
+      1.0
+    ]
+  ],
+  "homography_bev_to_track": [
+    [
+      16.498839965096366,
+      0.6565688473186365,
+      -1.1681687927891302
+    ],
+    [
+      -0.9303116981012344,
+      16.30771837277456,
+      -4.222418837350595
+    ],
+    [
+      1.2793851423631293e-05,
+      1.6198525484978254e-05,
+      0.9999949778073565
+    ]
+  ],
+  "track_map": "/home/sh/ROS2_project/nav-vla/tools/lidar_alignment_gui/assets/track_map.png",
+  "bev_image": "/home/sh/ROS2_project/nav-vla/tools/lidar_alignment_gui/output/images/alignment_bev_intensity_raw.png",
+  "points_json": "/home/sh/ROS2_project/nav-vla/tools/lidar_alignment_gui/output/config/track_map_alignment_points.json",
+  "track_map_points": [
+    [
+      330.7548466055866,
+      3247.522586486704
+    ],
+    [
+      248.9236475194636,
+      334.18489686668147
+    ],
+    [
+      4864.852535490499,
+      286.34794590391033
+    ],
+    [
+      4936.822340075972,
+      3074.79505548156
+    ]
+  ],
+  "bev_image_points": [
+    [
+      12.196469273743016,
+      200.77264804469274
+    ],
+    [
+      14.307396648044692,
+      21.578368715083798
+    ],
+    [
+      294.82618994413406,
+      34.71302793296089
+    ],
+    [
+      293.18435754189943,
+      206.87088268156424
+    ]
+  ],
+  "track_image_size": {
+    "width": 5228,
+    "height": 3594
+  },
+  "bev_image_size": {
+    "width": 328,
+    "height": 241
+  },
+  "inliers": [
+    1,
+    1,
+    1,
+    1
+  ],
+  "bev_geometry": {
+    "resolution": 0.05,
+    "forward_axis": "+y",
+    "forward_min": 1.5,
+    "forward_max": 17.900000000000002,
+    "lateral_min": -5.4,
+    "lateral_max": 6.65,
+    "z_min": -2.2,
+    "z_max": 0.6,
+    "rotation_deg": -8.0
+  }
+}
