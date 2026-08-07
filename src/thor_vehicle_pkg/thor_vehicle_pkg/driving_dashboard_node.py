@@ -3,14 +3,16 @@ driving_dashboard_node.py — nav-vla Operator Dashboard (PySide6)
 
 VLA_AD `operator_gui_pkg/dashboard_node.py`(선배 스택)의 충실 이식판.
 디자인 토큰·레이아웃·위젯(카메라 3패널, 롤링 바, 채팅, 퀵버튼, Node Health)을
-그대로 유지하고, 요청 사양대로 **좌측 하단을 트랙맵(라이다 측위 + 차량
-위치)**으로 교체했다. 데이터 소스만 nav-vla 토픽으로 매핑:
+그대로 유지하고, 요청 사양대로 **좌측 하단을 정합 BEV(라이브 점군 + 트랙
+라인 — 노트북의 aligned_bev_publisher 스트림)**로 교체했다. 미수신이면
+Waiting 표시(도안 맵 폴백은 혼동을 줘서 제거). 데이터 소스 매핑:
 
-    VlaIR 패널        → VLA Policy (instruction + /vla/status 지연/큐/underrun)
+    VlaIR 패널        → VLA Policy (instruction + /vla/status 지연/큐/underrun
+                        + Steer/L/R — 구 모션 라벨 병합)
     TTL Gate 바       → Pose Age Gate (pose 나이 vs 0.5 s 유실 임계 — 동일 시각화)
     E2E Latency 바    → Policy Latency (/vla/status latency_ms, 기준선 300 ms)
     BehaviorState 배지 → DRIVING / ESTOP / POSE LOST
-    좌하단 모션+채팅   → ★트랙맵 + 모션 라벨 | 채팅(→ /vla/instruction 직발행)
+    좌하단 모션+채팅   → ★정합 BEV | 채팅(→ /vla/instruction 직발행)
 
 아키텍처 (원본 그대로):
   Qt main thread : QTimer 15Hz → deque 읽기 → UI 갱신
@@ -55,9 +57,6 @@ from PySide6.QtWidgets import (
     QMainWindow, QPushButton, QSplitter,
     QVBoxLayout, QWidget,
 )
-
-from track_localizer_pkg.bev_detector import DetectorConfig
-from track_localizer_pkg.track_pose_node import TemplateFrame, _resolve_config_path
 
 # ── 디자인 토큰 (원본 그대로) ───────────────────────────────────────────────
 C_BG     = "#0d1117"
@@ -287,76 +286,6 @@ class CameraWidget(QLabel):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ★트랙맵 위젯 — 좌측 하단. 도안 템플릿 + 라이다 측위 차량점/궤적
-# ═══════════════════════════════════════════════════════════════════════════════
-class TrackMapWidget(QLabel):
-    def __init__(self, width=420, height=300, parent=None):
-        super().__init__(parent)
-        self._w, self._h = width, height
-        self.setFixedSize(width, height)
-        self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet(f"background: {C_BG3}; border: 1px solid {C_BORDER}; border-radius: 4px;")
-        self.setText("Track Map\nWaiting...")
-
-        self._bg = None
-        self._m_per_px = None
-        self._height_px = None
-        self._scale = 1.0
-        try:
-            homo = _resolve_config_path("alignment/track_map_aligned_homography.json")
-            tf = TemplateFrame(homo, DetectorConfig())
-            img = cv2.imread(_resolve_config_path("alignment/track2.png"))
-            if tf.ok and img is not None:
-                self._m_per_px = tf.m_per_px
-                self._height_px = tf.height_px
-                # 위젯 안에 맞는 스케일 (여백 포함)
-                self._scale = min(width / img.shape[1], height / img.shape[0])
-                img = cv2.resize(img, (int(img.shape[1] * self._scale),
-                                       int(img.shape[0] * self._scale)))
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                self._bg = QImage(img.data, img.shape[1], img.shape[0],
-                                  img.strides[0], QImage.Format.Format_RGB888).copy()
-        except Exception as e:  # noqa: BLE001
-            print(f"track map load failed: {e}")
-
-    def _to_px(self, x, y):
-        px = x / self._m_per_px * self._scale
-        py = (self._height_px - y / self._m_per_px) * self._scale
-        return px, py
-
-    def update_map(self, pose, trail, stale, geofence):
-        if self._bg is None:
-            self.setText("Track Map\n(정합 파일 없음)"
-                         + (f"\npose: {pose[0]:.2f}, {pose[1]:.2f}" if pose else ""))
-            return
-        pix = QPixmap.fromImage(self._bg)
-        painter = QPainter(pix)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        if len(trail) > 1:
-            painter.setPen(QPen(QColor(C_BLUE), 2))
-            pts = [self._to_px(x, y) for x, y in trail]
-            for a, b in zip(pts, pts[1:]):
-                painter.drawLine(int(a[0]), int(a[1]), int(b[0]), int(b[1]))
-
-        if pose:
-            px, py = self._to_px(pose[0], pose[1])
-            color = QColor(C_YELLOW if stale else C_RED)
-            painter.setPen(QPen(color, 3))
-            painter.setBrush(color)
-            painter.drawEllipse(int(px) - 6, int(py) - 6, 12, 12)
-            hx = px + 18 * math.cos(-pose[2])
-            hy = py + 18 * math.sin(-pose[2])
-            painter.drawLine(int(px), int(py), int(hx), int(hy))
-
-        if geofence:
-            painter.setPen(QPen(QColor(C_RED), 5))
-            painter.drawRect(2, 2, pix.width() - 4, pix.height() - 4)
-        painter.end()
-        self.setPixmap(pix)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # 레이턴시 바 위젯 (원본 — 기준선만 인자화: 카메라 33 ms / 정책 300 ms)
 # ═══════════════════════════════════════════════════════════════════════════════
 class LatencyBarWidget(QWidget):
@@ -532,18 +461,11 @@ class DashboardWindow(QMainWindow):
         left_layout.addLayout(cam_row)
 
         # ★좌하단: 정합 BEV (라이브 점군 + 트랙 라인 — 스튜디오와 같은 화면).
-        # BEV 스트림이 없을 때(노트북 미연결)는 도안+pose 트랙맵으로 폴백.
-        from PySide6.QtWidgets import QStackedWidget
+        # 라이다 노트북 미연결이면 Waiting 표시 — 도안 맵 폴백은 "연결된
+        # 것처럼 보인다"는 혼동을 줘서 제거 (2026-08-07 사용자 확인).
         bottom_split = QHBoxLayout()
-
         self._bev_aligned = CameraWidget("Aligned BEV (LiDAR)", 420, 340)
-        self._track_map = TrackMapWidget(420, 340)
-        self._map_stack = QStackedWidget()
-        self._map_stack.setFixedSize(420, 340)
-        self._map_stack.addWidget(self._bev_aligned)   # index 0: 정합 BEV
-        self._map_stack.addWidget(self._track_map)     # index 1: 폴백 트랙맵
-        self._map_stack.setCurrentIndex(1)
-        bottom_split.addWidget(self._map_stack)
+        bottom_split.addWidget(self._bev_aligned)
 
         chat_panel = QWidget()
         chat_layout = QVBoxLayout(chat_panel)
@@ -771,25 +693,21 @@ class DashboardWindow(QMainWindow):
             f"Steer: {st:+d} ({st * 5:+d}°)    L: {ls}    R: {rs}")
         self._vla_reasoning.setText(self._instruction)
 
-        # ★좌하단: 정합 BEV 신선하면 그것, 아니면 도안+pose 트랙맵 폴백
-        bev_fresh = (self._ros.last_bev_aligned_mono is not None
-                     and now_mono - self._ros.last_bev_aligned_mono < 2.0)
+        # ★좌하단: 정합 BEV (미수신이면 CameraWidget의 Waiting 표시 유지)
         if self._ros.buf_bev_aligned:
             self._bev_aligned.update_frame(
                 self._ros.buf_bev_aligned.popleft(),
                 C_RED if self._geofence else None)
             self._ros.node_alive["bev_map"] = now
-        self._map_stack.setCurrentIndex(0 if bev_fresh else 1)
+        elif (self._ros.last_bev_aligned_mono is not None
+              and now_mono - self._ros.last_bev_aligned_mono > 2.0):
+            self._bev_aligned._set_placeholder()   # 링크 끊김 → 대기 표시로 복귀
 
-        # Pose → (폴백) 트랙맵 + Age Gate
+        # Pose → Age Gate
         pose = self._ros.buf_pose[0] if self._ros.buf_pose else None
         if pose:
             self._pose = pose
             self._ros.node_alive["pose"] = now
-        stale = pose_age_s is None or pose_age_s > POSE_STALE_S
-        if not bev_fresh:
-            self._track_map.update_map(
-                self._pose, list(self._ros.pose_trail), stale, self._geofence)
         if pose_age_s is not None:
             self._ttl_bar.add_sample(pose_age_s * 1000.0, POSE_STALE_S * 1000.0)
 

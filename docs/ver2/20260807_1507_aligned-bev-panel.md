@@ -34,6 +34,12 @@ ros2 run track_localizer_pkg track_pose_node --ros-args --params-file ...
 ros2 run track_localizer_pkg aligned_bev_publisher     # ★신규 — 대시보드 좌하단
 ```
 
+## 정정 (15:12) — 도안 맵 폴백 제거
+
+사용자 확인 결과 미수신 시 도안 트랙맵이 뜨는 폴백은 **"연결된 것처럼
+보인다"는 혼동**을 유발 — 제거했다. 좌하단은 항상 정합 BEV 패널이고,
+미수신이면 Waiting 표시. `TrackMapWidget`도 함께 삭제 (git 이력에 보존).
+
 ## 미해결
 
 - 정합 BEV 위에 차량 pose 마커는 안 얹음 — 점군에 차량이 이미 보이므로
