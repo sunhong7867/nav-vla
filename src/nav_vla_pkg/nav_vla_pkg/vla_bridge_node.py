@@ -218,6 +218,22 @@ class VlaBridge(Node):
             self.declare_parameter("pursuit_lookahead_gain", 0.5).value)
         self.pursuit_max_lookahead = float(
             self.declare_parameter("pursuit_max_lookahead", 3.0).value)
+        # Lateral-acceleration speed cap (default OFF). With a commanded
+        # curvature k, cap v so that v^2 * |k| <= curv_slow_alat — the car
+        # slows for corners in proportion to how sharp the commanded arc is,
+        # while the arc itself is untouched (w is recomputed from k after v
+        # is final). Unlike the rejected steering boost this cannot fight the
+        # policy's geometry; it only trades speed for tracking margin.
+        self.curv_slow_alat = float(
+            self.declare_parameter("curv_slow_alat", 0.0).value)
+        # Deceleration budget for ANTICIPATORY corner braking (preview mode
+        # only). The instantaneous a_lat cap starts slowing inside the
+        # corner; scanning the predicted path lets braking start early enough
+        # that the corner is entered at its allowed speed. Keep <= the
+        # effective slew decel (speed_slew * rate_hz) or the slew will lag
+        # the plan.
+        self.curv_brake_decel = float(
+            self.declare_parameter("curv_brake_decel", 0.8).value)
 
         self.bridge = CvBridge()
         self.obs = LatestObservation()
@@ -405,6 +421,10 @@ class VlaBridge(Node):
             k_pursuit = self._pursuit_curvature(a, abs(v))
             if k_pursuit is not None:
                 k_raw = k_pursuit
+        elif self.track_mode == "preview":
+            k_preview = self._preview_curvature(a, abs(v))
+            if k_preview is not None:
+                k_raw = k_preview
         if k_raw is not None:
             k = k_raw
             if self.curv_boost > 1.0:
@@ -416,10 +436,80 @@ class VlaBridge(Node):
             if abs(k) > MAX_CURVATURE:
                 k = math.copysign(MAX_CURVATURE, k)
                 override = "clamp_curvature"
+            if self.curv_slow_alat > 0.0:
+                v_cap = None
+                if self.track_mode == "preview":
+                    v_cap = self._speed_cap_ahead(a)
+                if v_cap is None and abs(k) > 1e-4:
+                    v_cap = math.sqrt(self.curv_slow_alat / abs(k))
+                if v_cap is not None and abs(v) > v_cap:
+                    v = math.copysign(v_cap, v)
+                    override = "curv_slow"
             w = k * v
         else:
             w = w_raw
         self._publish(v, w, override=override)
+
+    def _speed_cap_ahead(self, popped):
+        """Anticipatory curve speed cap over the predicted path.
+
+        Each path step j tolerates v_j = sqrt(a_lat/|k_j|); braking at
+        curv_brake_decel over the arc distance s_j to reach it bounds the
+        CURRENT speed by sqrt(v_j^2 + 2*b*s_j). The minimum over j starts
+        the slowdown before the corner instead of inside it — at 4+ m/s the
+        instantaneous cap alone brakes a car-length too late.
+        """
+        path = [popped] + self.queue.snapshot()
+        if len(path) < 3:
+            return None
+        alat = self.curv_slow_alat
+        b = max(0.05, self.curv_brake_decel)
+        s = 0.0
+        cap = None
+        for idx in range(len(path) - 1):
+            dx, dy, dyaw = path[idx]
+            ds = math.hypot(dx, dy)
+            dx2, dy2, dyaw2 = path[idx + 1]
+            seg = ds + math.hypot(dx2, dy2)
+            s += ds
+            if seg < 1e-3:
+                continue
+            k = abs(dyaw + dyaw2) / seg
+            if k < 1e-4:
+                continue
+            v_there = math.sqrt(alat / k)
+            v_now = math.sqrt(v_there * v_there
+                              + 2.0 * b * max(0.0, s - ds))
+            if cap is None or v_now < cap:
+                cap = v_now
+        return cap
+
+    def _preview_curvature(self, popped, speed):
+        """Mean curvature of the predicted path over the lookahead window.
+
+        k = sum(dyaw) / sum(ds) across the actions within lookahead arc
+        length. Unlike chord-aiming pure pursuit (which systematically
+        under-turns on constant curves — measured 3/4 ring departures, all
+        deviations outward), this reproduces the path's own curvature exactly
+        mid-corner and only dilutes it where the window straddles the corner
+        exit, which is precisely the early-unwind being sought.
+        """
+        path = [popped] + self.queue.snapshot()
+        if len(path) < 2:
+            return None
+        lookahead = min(self.pursuit_max_lookahead,
+                        self.pursuit_base_lookahead
+                        + self.pursuit_lookahead_gain * speed)
+        arc = 0.0
+        yaw_sum = 0.0
+        for dx, dy, dyaw in path:
+            arc += math.hypot(dx, dy)
+            yaw_sum += dyaw
+            if arc >= lookahead:
+                break
+        if arc < 0.5 * self.pursuit_base_lookahead:
+            return None
+        return yaw_sum / arc
 
     def _pursuit_curvature(self, popped, speed):
         """Curvature toward a lookahead point on the predicted path.

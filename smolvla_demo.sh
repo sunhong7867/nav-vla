@@ -115,7 +115,8 @@ grep -q 'serving on' "$LOGD/serve.log" || { echo "정책 서버 기동 실패 �
 
 echo "[demo] 3/5 브리지 기동..."
 setsid nohup ros2 run nav_vla_pkg vla_bridge_node --ros-args -p use_sim_time:=true \
-  -p image_topic:=/camera/image_raw -p max_speed:=3.2 -p speed_slew:=0.08 \
+  -p image_topic:=/camera/image_raw -p max_speed:=2.25 -p speed_slew:=0.08 \
+  -p track_mode:=preview -p curv_slow_alat:=0.6 -p curv_boost:=1.1 \
   > "$LOGD/bridge.log" 2>&1 < /dev/null &
 
 echo "[demo] 4/5 내비게이터 + 내레이터 기동..."
