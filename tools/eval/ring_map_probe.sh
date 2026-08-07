@@ -9,7 +9,11 @@ set -e
 CKPT=$1
 PFX=$2
 [ -d "$CKPT" ] || { echo "usage: ring_map_probe.sh <ckpt_dir> <out_prefix>"; exit 2; }
-WS=/home/sh/ROS2_project/nav-vla
+# Workspace root is derived from this script's location (tools/eval/ -> repo).
+# Override with WS= for out-of-tree checkouts; NAVVLA_PY points at the LeRobot
+# venv python (the serving deps are not in the ROS environment).
+WS="${WS:-$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)}"
+NAVVLA_PY="${NAVVLA_PY:-$HOME/venv/navvla/bin/python}"
 OUT=$WS/eval_out
 mkdir -p $OUT
 source /opt/ros/jazzy/setup.bash
@@ -26,7 +30,7 @@ setsid nohup ros2 launch simulation_pkg driving_sim.launch.py use_camera:=true \
   > $OUT/${PFX}_sim.log 2>&1 < /dev/null &
 sleep 25
 
-setsid nohup /home/sh/venv/navvla/bin/python -u \
+setsid nohup "$NAVVLA_PY" -u \
   $WS/src/nav_vla_pkg/scripts/vla_policy_server.py \
   --checkpoint $CKPT --endpoint ipc:///tmp/nav_vla.sock --warmup 4 \
   > $OUT/${PFX}_serve.log 2>&1 < /dev/null &

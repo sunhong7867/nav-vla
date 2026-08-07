@@ -6,9 +6,15 @@ from the vehicle and gives Thor a global pose over the network.
     /lidar_points (PointCloud2)
         -> BEV crop + floor-relative height gate + cluster  (bev_detector)
         -> constant-velocity Kalman + path-tangent heading   (heading)
-        -> /track/vehicle_pose   nav_msgs/Odometry
-           /track/vehicle_status std_msgs/String (JSON)
-           /track/geofence_estop std_msgs/Bool
+        -> /track/vehicle_pose     nav_msgs/Odometry  (sensor-anchored frame)
+           /track/vehicle_pose_map nav_msgs/Odometry  (canonical template frame)
+           /track/vehicle_status   std_msgs/String (JSON)
+           /track/geofence_estop   std_msgs/Bool
+
+The second pose is the one zone assets and training data should consume: its
+frame is the track-map TEMPLATE in metres, so it survives re-installing the
+banner — only the homography changes, never the coordinates. The sensor-frame
+pose changes coordinate system with every installation.
 
 Only stock message types are used on purpose. Both repositories ship an
 ``interfaces_pkg`` whose fields disagree, so anything custom here would have to
@@ -26,6 +32,8 @@ Run:
 
 import json
 import math
+import os
+from pathlib import Path
 
 import numpy as np
 import rclpy
@@ -79,6 +87,103 @@ _DETECTOR_PARAMS = (
 )
 
 
+def _resolve_config_path(value):
+    """Expand ~/$VARS and resolve relative paths against likely config dirs.
+
+    The YAML used to hard-code one machine's absolute paths; a relative value
+    like ``alignment/track2.png`` now resolves against (in order) the package
+    share config dir and the source-tree config dir, so the same params file
+    works on the trackside laptop, Thor, and this dev checkout unchanged.
+    """
+    if not value:
+        return value
+    p = Path(os.path.expandvars(os.path.expanduser(value)))
+    if p.is_absolute():
+        return str(p)
+    candidates = []
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        candidates.append(Path(get_package_share_directory("track_localizer_pkg")) / "config")
+    except Exception:
+        pass
+    # source layout: .../src/track_localizer_pkg/track_localizer_pkg/this_file
+    candidates.append(Path(__file__).resolve().parents[1] / "config")
+    for base in candidates:
+        cand = base / p
+        if cand.exists():
+            return str(cand)
+    return str(p)
+
+
+class TemplateFrame:
+    """Sensor-frame pose -> canonical template ('track_map') frame.
+
+    The sensor-anchored track frame is re-created every time the banner is
+    unrolled, so zones and recorded trajectories stored in it die with each
+    installation. The template image is the installation-invariant frame:
+    x = template px * scale (metres), y flipped so +y is up (right-handed).
+    Scale defaults to the local Jacobian of the stored bev->track homography
+    (BEV px are metric); override with template_m_per_px once tape-verified.
+    """
+
+    def __init__(self, homography_json, cfg, m_per_px=0.0, logger=None):
+        self.ok = False
+        try:
+            data = json.loads(Path(homography_json).read_text(encoding="utf-8"))
+            self.h_bev_to_track = np.asarray(
+                data["homography_bev_to_track"], dtype=float
+            )
+            self.height_px = float(data["track_image_size"]["height"])
+        except Exception as exc:  # missing file / key — feature off, not fatal
+            if logger:
+                logger.warn(f"template frame off — {homography_json}: {exc}")
+            return
+        self.cfg = cfg
+        if m_per_px > 0.0:
+            self.m_per_px = float(m_per_px)
+        else:
+            cx = (cfg.forward_max - cfg.forward_min) / (2.0 * cfg.resolution)
+            cy = (cfg.lateral_max - cfg.lateral_min) / (2.0 * cfg.resolution)
+            det = abs(np.linalg.det(self._jacobian(cx, cy)))
+            if det <= 0.0:
+                if logger:
+                    logger.warn("template frame off — degenerate homography")
+                return
+            # J is template px per BEV px; one BEV px is cfg.resolution metres.
+            self.m_per_px = cfg.resolution / math.sqrt(det)
+        self.ok = True
+
+    def _apply(self, col, row):
+        v = self.h_bev_to_track @ np.array([col, row, 1.0])
+        return v[0] / v[2], v[1] / v[2]
+
+    def _jacobian(self, col, row, eps=0.5):
+        x0, y0 = self._apply(col, row)
+        x1, y1 = self._apply(col + eps, row)
+        x2, y2 = self._apply(col, row + eps)
+        return np.array(
+            [[(x1 - x0) / eps, (x2 - x0) / eps], [(y1 - y0) / eps, (y2 - y0) / eps]]
+        )
+
+    def sensor_to_map(self, forward, lateral, yaw=None):
+        """(forward, lateral[, yaw]) sensor metres -> (x, y, yaw) map metres."""
+        cfg = self.cfg
+        # inverse of bev_detector.pixel_to_world
+        col = (forward - cfg.forward_min) / cfg.resolution - 0.5
+        row = (cfg.lateral_max - lateral) / cfg.resolution - 0.5
+        px, py = self._apply(col, row)
+        x_m = px * self.m_per_px
+        y_m = (self.height_px - py) * self.m_per_px  # +y up
+        yaw_m = None
+        if yaw is not None:
+            J = self._jacobian(col, row)
+            # heading unit vector through the same local map: col grows with
+            # forward, row grows against lateral; template row is flipped to y-up.
+            v = J @ np.array([math.cos(yaw), -math.sin(yaw)])
+            yaw_m = math.atan2(-v[1], v[0])
+        return x_m, y_m, yaw_m
+
+
 class TrackPoseNode(Node):
     def __init__(self):
         super().__init__("track_pose_node")
@@ -86,6 +191,8 @@ class TrackPoseNode(Node):
         cfg_kwargs = {}
         for name, default in _DETECTOR_PARAMS:
             cfg_kwargs[name] = self.declare_parameter(name, default).value
+        for key in ("track_map", "homography_json"):
+            cfg_kwargs[key] = _resolve_config_path(cfg_kwargs[key])
         self.cfg = DetectorConfig(**cfg_kwargs)
 
         self.cloud_topic = self.declare_parameter("cloud_topic", "/lidar_points").value
@@ -136,6 +243,29 @@ class TrackPoseNode(Node):
         self.pose_pub = self.create_publisher(Odometry, self.pose_topic, sensor_qos)
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
         self.estop_pub = self.create_publisher(Bool, self.estop_topic, 10)
+
+        # Canonical template-frame pose (see TemplateFrame docstring). Zone
+        # assets and training data consume THIS one; the sensor-frame pose is
+        # for the current installation only.
+        self.map_pose_topic = self.declare_parameter(
+            "map_pose_topic", "/track/vehicle_pose_map").value
+        self.map_frame_id = self.declare_parameter("map_frame_id", "track_map").value
+        m_per_px = float(self.declare_parameter("template_m_per_px", 0.0).value)
+        self.template = None
+        self.map_pose_pub = None
+        if self.cfg.homography_json:
+            tf = TemplateFrame(
+                self.cfg.homography_json, self.cfg, m_per_px, self.get_logger())
+            if tf.ok:
+                self.template = tf
+                self.map_pose_pub = self.create_publisher(
+                    Odometry, self.map_pose_topic, sensor_qos)
+                self.get_logger().info(
+                    f"template frame on — {self.map_pose_topic}, scale "
+                    f"{tf.m_per_px * 1000:.3f} mm/px"
+                    + (" (homography-derived — tape-verify, then set "
+                       "template_m_per_px)" if m_per_px <= 0.0 else " (parameter)")
+                )
         self.create_subscription(PointCloud2, self.cloud_topic, self._on_cloud, sensor_qos)
 
         self.last_detect_stamp = None
@@ -220,6 +350,29 @@ class TrackPoseNode(Node):
         odom.twist.twist.linear.y = estimate["vy"]
         self.pose_pub.publish(odom)
 
+        if self.map_pose_pub is not None:
+            heading = estimate["heading"] if estimate["heading_valid"] else None
+            mx, my, myaw = self.template.sensor_to_map(
+                estimate["forward"], estimate["lateral"], heading)
+            m = Odometry()
+            m.header.stamp = msg.header.stamp
+            m.header.frame_id = self.map_frame_id
+            m.child_frame_id = self.child_frame_id
+            m.pose.pose.position.x = mx
+            m.pose.pose.position.y = my
+            if myaw is not None:
+                qx, qy, qz, qw = yaw_to_quaternion(myaw)
+                m.pose.pose.orientation.x = qx
+                m.pose.pose.orientation.y = qy
+                m.pose.pose.orientation.z = qz
+                m.pose.pose.orientation.w = qw
+                m.twist.twist.linear.x = estimate["speed"] * math.cos(myaw)
+                m.twist.twist.linear.y = estimate["speed"] * math.sin(myaw)
+            else:
+                m.pose.pose.orientation.w = 1.0
+            m.pose.covariance = cov  # same validity semantics, esp. [35]
+            self.map_pose_pub.publish(m)
+
     def _publish_status(self, result, estimate, stamp):
         payload = {
             "status": result["status"],
@@ -233,6 +386,11 @@ class TrackPoseNode(Node):
             payload["lateral_m"] = round(estimate["lateral"], 3)
             if estimate["heading"] is not None:
                 payload["heading_deg"] = round(math.degrees(estimate["heading"]), 2)
+            if self.template is not None:
+                mx, my, _ = self.template.sensor_to_map(
+                    estimate["forward"], estimate["lateral"])
+                payload["map_x_m"] = round(mx, 3)
+                payload["map_y_m"] = round(my, 3)
         self.status_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
 
         estop = False

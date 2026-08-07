@@ -826,13 +826,17 @@ class PointPickView(QGraphicsView):
 class PickPanel(QFrame):
     """Titled point-pick panel with counter and undo/reset controls."""
 
-    def __init__(self, title, max_points=4, with_crop=False, parent=None):
+    def __init__(self, title, max_points=4, with_crop=False, parent=None, min_points=None):
         super().__init__(parent)
         self.setObjectName("panel")
         self.view = PointPickView(max_points=max_points)
-        self.counter = QLabel(f"0/{max_points}")
-        self.counter.setObjectName("chip")
+        # min_points < max_points allows extra correspondences beyond the
+        # minimum — least-squares over 5+ points is what makes the stored
+        # residuals nonzero and the alignment able to report its own error.
+        self.min_points = min_points if min_points is not None else max_points
         self.max_points = max_points
+        self.counter = QLabel(self._counter_text(0))
+        self.counter.setObjectName("chip")
         self.crop_btn = None
         self.uncrop_btn = None
 
@@ -870,10 +874,15 @@ class PickPanel(QFrame):
 
         self.view.pointsChanged.connect(self._update_counter)
 
+    def _counter_text(self, count):
+        if self.min_points < self.max_points:
+            return f"{count} (≥{self.min_points})"
+        return f"{count}/{self.max_points}"
+
     def _update_counter(self):
         count = len(self.view.points)
-        self.counter.setText(f"{count}/{self.max_points}")
-        state = "ok" if count == self.max_points else ""
+        self.counter.setText(self._counter_text(count))
+        state = "ok" if count >= self.min_points else ""
         self.counter.setProperty("state", state)
         self.counter.style().unpolish(self.counter)
         self.counter.style().polish(self.counter)
@@ -943,8 +952,10 @@ class AlignmentPage(QWidget):
         instructions.setWordWrap(True)
         instructions.setObjectName("infoBar")
 
-        self.bev_panel = PickPanel("① LiDAR BEV", 4, with_crop=True)
-        self.track_panel = PickPanel("② 트랙 이미지", 4)
+        # 최소 4점, 최대 12점. 4점이면 잔차가 구조적으로 0이라 정합 오차를
+        # 스스로 잴 수 없다 — 6~8점을 권장 (compute_homography 주석 참조).
+        self.bev_panel = PickPanel("① LiDAR BEV", 12, with_crop=True, min_points=4)
+        self.track_panel = PickPanel("② 트랙 이미지", 12, min_points=4)
         self.track_panel.view.set_image_bgr(track_bgr)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -1080,18 +1091,26 @@ class AlignmentPage(QWidget):
 
     def _update_ready(self):
         bev_points, track_points = self._points()
+        n_bev, n_track = len(bev_points), len(track_points)
         ready = (
             self._bev_gray is not None
-            and len(bev_points) == 4
-            and len(track_points) == 4
+            and n_bev >= 4
+            and n_bev == n_track
         )
         self.preview_btn.setEnabled(ready)
         self.confirm_btn.setEnabled(ready)
         if ready:
-            self.status_label.setText("4점 완료 — 미리보기로 확인한 뒤 ‘최종 확인’을 누르세요.")
+            hint = (
+                " 4점은 잔차가 0으로 고정됩니다 — 6~8점을 권장."
+                if n_bev == 4 else ""
+            )
+            self.status_label.setText(
+                f"{n_bev}점 완료 — 미리보기로 확인한 뒤 ‘최종 확인’을 누르세요.{hint}"
+            )
         elif self._bev_gray is not None:
             self.status_label.setText(
-                f"BEV {len(bev_points)}/4 · 트랙 {len(track_points)}/4"
+                f"BEV {n_bev} · 트랙 {n_track} — 같은 물리 지점을 같은 순서로, "
+                f"각각 4점 이상(동수) 필요"
             )
 
     def _render_preview(self):
@@ -2030,7 +2049,16 @@ class MainWindow(QMainWindow):
         set_chip(self.overlay_chip, "오버레이 ON", "ok")
         self.banner.setVisible(False)
         if not startup:
-            self.statusBar().showMessage("정합이 저장되고 라이브 화면에 적용되었습니다 ✓", 8000)
+            msg = "정합이 저장되고 라이브 화면에 적용되었습니다 ✓"
+            info = getattr(self, "_last_alignment_info", None)
+            if info:
+                n = info.get("n_points")
+                rms_m = info.get("residual_rms_m")
+                if n == 4:
+                    msg += "  (4점 — 잔차 측정 불가, 다음엔 6~8점 권장)"
+                elif rms_m is not None:
+                    msg += f"  ({n}점, 잔차 RMS {rms_m:.3f} m — D2 게이트 <0.05 m)"
+            self.statusBar().showMessage(msg, 12000)
         return True
 
     def _set_overlay_enabled(self, enabled):
@@ -2314,6 +2342,10 @@ class MainWindow(QMainWindow):
 
     def _on_alignment_applied(self, paths):
         self.args.homography_json = str(paths["homography_json"])
+        self._last_alignment_info = {
+            "n_points": paths.get("n_points"),
+            "residual_rms_m": paths.get("residual_rms_m"),
+        }
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self._load_overlay()
