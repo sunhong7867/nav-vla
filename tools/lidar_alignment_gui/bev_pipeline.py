@@ -303,11 +303,28 @@ def compute_homography(track_points, bev_points):
     track = np.asarray(track_points, dtype=np.float32)
     bev = np.asarray(bev_points, dtype=np.float32)
     if track.shape != bev.shape or track.shape[0] < 4:
-        raise ValueError("트랙/BEV 각각 4개의 대응점이 필요합니다.")
+        raise ValueError("트랙/BEV 각각 최소 4개(같은 개수)의 대응점이 필요합니다.")
+    # method=0 = least squares over ALL points. With exactly 4 the system is
+    # exactly determined and residuals are identically zero — the alignment
+    # cannot measure its own error. 5+ points make the residuals meaningful.
     homography, inliers = cv2.findHomography(track, bev, method=0)
     if homography is None:
         raise RuntimeError("선택한 점으로 호모그래피를 계산하지 못했습니다.")
     return homography, inliers
+
+
+def alignment_residuals(track_points, bev_points, homography):
+    """Per-point reprojection error (track -> BEV, in BEV pixels) and RMS.
+
+    Zero by construction when only 4 points were picked; only 5+ points give
+    the residuals diagnostic power. Returns (per_point_px, rms_px).
+    """
+    track = np.asarray(track_points, dtype=np.float64).reshape(-1, 1, 2)
+    bev = np.asarray(bev_points, dtype=np.float64)
+    projected = cv2.perspectiveTransform(track, np.asarray(homography, dtype=np.float64))
+    err = np.linalg.norm(projected.reshape(-1, 2) - bev, axis=1)
+    rms = float(np.sqrt(np.mean(err ** 2))) if len(err) else 0.0
+    return err.tolist(), rms
 
 
 def render_alignment_preview(bev_bgr, track_bgr, track_points, bev_points, opacity=0.85):
@@ -358,8 +375,9 @@ def save_alignment(
         json.dumps(
             {
                 "point_order": (
-                    "Same physical 4 points clicked in order on "
-                    "track_map_points and bev_image_points."
+                    "Same physical points clicked in the same order on "
+                    "track_map_points and bev_image_points (>=4; use 6-8 so "
+                    "the residuals below are meaningful)."
                 ),
                 "track_map_points": [[int(round(x)), int(round(y))] for x, y in track_points],
                 "bev_image_points": [[int(round(x)), int(round(y))] for x, y in bev_points],
@@ -370,6 +388,10 @@ def save_alignment(
     )
 
     homography, inliers = compute_homography(track_points, bev_points)
+    residuals_px, residual_rms_px = alignment_residuals(track_points, bev_points, homography)
+    # BEV pixels are metric (resolution m/px), so the residual converts to
+    # meters directly — this is the number D2's <0.05 m gate reads.
+    res_m = float(geometry.resolution) if geometry is not None else None
     bev_h, bev_w = bev_bgr.shape[:2]
     line_mask = extract_layout_line_mask(track_bgr)
     road_mask = extract_road_mask(track_bgr)
@@ -399,7 +421,12 @@ def save_alignment(
         },
         "bev_image_size": {"width": int(bev_w), "height": int(bev_h)},
         "inliers": inliers.ravel().astype(int).tolist() if inliers is not None else [],
+        "n_points": int(len(track_points)),
+        "residuals_bev_px": [round(float(e), 3) for e in residuals_px],
+        "residual_rms_bev_px": round(residual_rms_px, 3),
     }
+    if res_m is not None:
+        result["residual_rms_m"] = round(residual_rms_px * res_m, 4)
     if geometry is not None:
         result["bev_geometry"] = geometry.to_dict()
     homography_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -414,6 +441,9 @@ def save_alignment(
         "overlay_preview": overlay_path,
         "warped_track": warped_path,
         "road_mask": road_mask_path,
+        "n_points": int(len(track_points)),
+        "residual_rms_px": round(residual_rms_px, 3),
+        "residual_rms_m": round(residual_rms_px * res_m, 4) if res_m is not None else None,
     }
 
 
