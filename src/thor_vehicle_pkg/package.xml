@@ -18,6 +18,7 @@
   <depend>nav_msgs</depend>
   <depend>std_msgs</depend>
   <depend>interfaces_pkg</depend>
+  <depend>track_localizer_pkg</depend>
   <depend>cv_bridge</depend>
   <depend>python3-serial</depend>
   <depend>python3-opencv</depend>

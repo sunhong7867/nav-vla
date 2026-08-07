@@ -38,7 +38,11 @@ kill_stack() {
   pat='camera_publisher_nod';       pkill -f "${pat}e" 2>/dev/null
   pat='cmd_vel_motion_adapter_nod'; pkill -f "${pat}e" 2>/dev/null
   pat='serial_sender_nod';          pkill -f "${pat}e" 2>/dev/null
+  pat='driving_dashboar';           pkill -f "${pat}d" 2>/dev/null
+  pat='chat_gui_nod';               pkill -f "${pat}e" 2>/dev/null
   sleep 2
+  pat='driving_dashboar';           pkill -9 -f "${pat}d" 2>/dev/null
+  pat='chat_gui_nod';               pkill -9 -f "${pat}e" 2>/dev/null
 }
 
 case "${1:-}" in
@@ -73,6 +77,10 @@ if [ "$MODE" = wheelsup ]; then
     -p port:=$SERIAL_PORT \
     > "$LOGD/serial.log" 2>&1 < /dev/null &
   sleep 3
+  if [ -n "${DISPLAY:-}" ] && [ "${NAVVLA_DASH:-1}" = 1 ]; then
+    setsid nohup ros2 run thor_vehicle_pkg driving_dashboard \
+      > "$LOGD/dashboard.log" 2>&1 < /dev/null &
+  fi
   echo "[car] 기동 완료. 검증 시작:"
   echo "    ros2 run thor_vehicle_pkg wheels_up_test"
   echo "[car] 통과하면 출력된 STEER_SIGN으로 전체 모드 기동. 종료: $0 down"
@@ -115,6 +123,18 @@ setsid nohup ros2 run nav_vla_pkg vla_bridge_node --ros-args \
   -p max_speed:=1.0 -p speed_slew:=0.08 \
   > "$LOGD/bridge.log" 2>&1 < /dev/null &
 sleep 2
+
+if [ -n "${DISPLAY:-}" ] && [ "${NAVVLA_DASH:-1}" = 1 ]; then
+  echo "[car] 대시보드 기동 (카메라·트랙맵·상태·E-STOP)..."
+  setsid nohup ros2 run thor_vehicle_pkg driving_dashboard \
+    > "$LOGD/dashboard.log" 2>&1 < /dev/null &
+fi
+if [ -n "${DISPLAY:-}" ] && [ "${NAVVLA_CHAT:-1}" = 1 ]; then
+  echo "[car] 채팅 GUI 기동 (자연어 명령 입력)..."
+  setsid nohup ros2 run nav_vla_pkg chat_gui_node --ros-args \
+    -p control_backend:=smolvla \
+    > "$LOGD/chat_gui.log" 2>&1 < /dev/null &
+fi
 
 echo "[car] 4/4 준비 완료. 주행 시작 (빈 공간, 저속):"
 echo "  ros2 topic pub --once --qos-durability transient_local --qos-reliability reliable \\"

@@ -28,6 +28,7 @@ setup(
             'cmd_vel_motion_adapter_node = '
             'thor_vehicle_pkg.cmd_vel_motion_adapter_node:main',
             'wheels_up_test = thor_vehicle_pkg.wheels_up_test:main',
+            'driving_dashboard = thor_vehicle_pkg.driving_dashboard_node:main',
         ],
     },
 )

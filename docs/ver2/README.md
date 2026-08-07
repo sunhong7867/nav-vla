@@ -16,6 +16,7 @@
 
 | 날짜 | 문서 | 요약 |
 |---|---|---|
+| 2026-08-07 14:45 | [주행 대시보드](20260807_1445_driving-dashboard.md) | `driving_dashboard` 신설(PySide6) — 카메라 + **좌하단 트랙맵·차량위치·궤적**(캐노니컬 프레임 재사용) + 지연/큐·명령·MotionCommand·**E-STOP 버튼**. `thor_car_demo.sh`에 자동 기동 통합. 모의 데이터 실기동 + 스크린샷 육안 검증 |
 | 2026-08-07 14:30 | [실차 첫날 준비](20260807_1430_real-car-day-prep.md) | 내일 차량 작업을 체크리스트화 — 브리지 **CompressedImage 직수신**(스텁 폐루프 121건 PASS), `wheels_up_test` 6항목 커맨더(dry-run PASS), `thor_car_demo.sh`(full 모드는 **STEER_SIGN 명시 전 거부** — wheels-up 건너뛰기 구조적 차단). 속도 상한 60/255·1.0 m/s 보수 설정 |
 | 2026-08-07 13:17 | [시뮬 데모 Thor 완주](20260807_1317_sim-demo-on-thor.md) | **회색 화면 진범 = GUI ogre1 (aarch64)** — 카메라 프레임 캡처로 서버측 무혐의 입증 후 ogre2 전환(런치가 아키텍처별 자동 선택, 노트북 무변경). 하드코딩 `~/ROS2_project` 8곳+는 심링크로 우회. **폐루프 주행 확인**: cmd_vel 8.1 Hz, 동시부하 지연 289~299 ms(+25%), underrun 1~3%, 내레이터 정상 |
 | 2026-08-07 12:52 | [Thor 추론 실측 233 ms](20260807_1252_thor-inference-benchmark.md) | **P50 233 / P95 243 ms (4.3 Hz), 지터 ±7%** — 시뮬 4060 대비 ~5×, "커밋 파탄" 위험 기각, 청크 단축 여지 확보. `lerobot==0.4.4` 핀이 결정적(0.6.1은 hub 충돌), **`num2words` 누락 발견**→requirements 추가, 데모 프리플라이트에 gz 검사 추가. 잔여: Gazebo(sudo)·compile·동시부하 재측정 |
