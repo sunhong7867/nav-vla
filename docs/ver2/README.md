@@ -16,6 +16,7 @@
 
 | 날짜 | 문서 | 요약 |
 |---|---|---|
+| 2026-08-07 15:07 | [좌하단 정합 BEV 패널](20260807_1507_aligned-bev-panel.md) | `aligned_bev_publisher` 신설 — 노트북에서 점군→BEV+트랙라인을 JPEG 스트리밍(~20 KB, 원시 점군 불전송 원칙 유지), 대시보드 좌하단이 **스튜디오와 같은 정합 BEV** 표시(미수신 시 도안 맵 폴백). 라인 추출은 스튜디오 `layout_rendering` 직임포트(단순 임계값은 배경까지 잡아 실패). 합성 점군 검증 |
 | 2026-08-07 14:52 | [대시보드 재작업: VLA_AD 이식](20260807_1452_dashboard-vlaad-port.md) | 14:45 미니멀판은 **요구 오독으로 폐기** — `operator_gui_pkg` 866줄을 디자인·레이아웃·위젯 그대로 이식, 좌하단만 트랙맵 교체. TTL바→Pose Age Gate(0.5 s), E2E바→Policy Latency(기준 300 ms), STOP=estop+빈문장 이중 정지. 모의 피드+스크린샷 검증 |
 | 2026-08-07 14:45 | [주행 대시보드](20260807_1445_driving-dashboard.md) | `driving_dashboard` 신설(PySide6) — 카메라 + **좌하단 트랙맵·차량위치·궤적**(캐노니컬 프레임 재사용) + 지연/큐·명령·MotionCommand·**E-STOP 버튼**. `thor_car_demo.sh`에 자동 기동 통합. 모의 데이터 실기동 + 스크린샷 육안 검증 |
 | 2026-08-07 14:30 | [실차 첫날 준비](20260807_1430_real-car-day-prep.md) | 내일 차량 작업을 체크리스트화 — 브리지 **CompressedImage 직수신**(스텁 폐루프 121건 PASS), `wheels_up_test` 6항목 커맨더(dry-run PASS), `thor_car_demo.sh`(full 모드는 **STEER_SIGN 명시 전 거부** — wheels-up 건너뛰기 구조적 차단). 속도 상한 60/255·1.0 m/s 보수 설정 |

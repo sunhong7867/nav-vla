@@ -174,6 +174,11 @@ class DashboardROSNode(Node):
                                  lambda m: self.buf_scene.appendleft(m.data), qos_best)
         self.create_subscription(RosCompressedImage, "bev/color/compressed",
                                  lambda m: self.buf_bev_color.appendleft(m.data), qos_best)
+        # ★좌하단: 노트북의 aligned_bev_publisher가 보내는 정합 BEV
+        self.buf_bev_aligned = deque(maxlen=1)
+        self.last_bev_aligned_mono = None
+        self.create_subscription(RosCompressedImage, "/track/aligned_bev/compressed",
+                                 self._cb_bev_aligned, qos_best)
         self.create_subscription(RosImage, "debug/pipeline_overlay",
                                  self._cb_debug_img, qos_reliable)
         self.create_subscription(String, "/vla/status",
@@ -202,6 +207,10 @@ class DashboardROSNode(Node):
         self.node_alive = {}
 
         self.get_logger().info("Dashboard ROS node ready")
+
+    def _cb_bev_aligned(self, msg: RosCompressedImage):
+        self.buf_bev_aligned.appendleft(msg.data)
+        self.last_bev_aligned_mono = time.monotonic()
 
     def _cb_debug_img(self, msg: RosImage):
         try:
@@ -472,6 +481,7 @@ class DashboardWindow(QMainWindow):
         self._pose = None
         self._geofence = False
         self._estop = False
+        self._motion = (0, 0, 0)   # steering, left, right
 
         self._build_ui()
         self._start_timer()
@@ -521,20 +531,19 @@ class DashboardWindow(QMainWindow):
         cam_row.addWidget(self._cam_debug)
         left_layout.addLayout(cam_row)
 
-        # ★좌하단: 트랙맵 + 모션 라벨 | 채팅
+        # ★좌하단: 정합 BEV (라이브 점군 + 트랙 라인 — 스튜디오와 같은 화면).
+        # BEV 스트림이 없을 때(노트북 미연결)는 도안+pose 트랙맵으로 폴백.
+        from PySide6.QtWidgets import QStackedWidget
         bottom_split = QHBoxLayout()
 
-        map_col = QVBoxLayout()
-        map_col.setSpacing(4)
-        self._track_map = TrackMapWidget(420, 290)
-        map_col.addWidget(self._track_map)
-        self._motion_label = QLabel("Steer: +0  L: 0  R: 0")
-        self._motion_label.setFont(QFont("monospace", 14, QFont.Weight.Bold))
-        self._motion_label.setAlignment(Qt.AlignCenter)
-        self._motion_label.setStyleSheet(
-            f"background: {C_BG2}; border: 1px solid {C_BORDER}; border-radius: 4px; padding: 6px;")
-        map_col.addWidget(self._motion_label)
-        bottom_split.addLayout(map_col)
+        self._bev_aligned = CameraWidget("Aligned BEV (LiDAR)", 420, 340)
+        self._track_map = TrackMapWidget(420, 340)
+        self._map_stack = QStackedWidget()
+        self._map_stack.setFixedSize(420, 340)
+        self._map_stack.addWidget(self._bev_aligned)   # index 0: 정합 BEV
+        self._map_stack.addWidget(self._track_map)     # index 1: 폴백 트랙맵
+        self._map_stack.setCurrentIndex(1)
+        bottom_split.addWidget(self._map_stack)
 
         chat_panel = QWidget()
         chat_layout = QVBoxLayout(chat_panel)
@@ -682,6 +691,7 @@ class DashboardWindow(QMainWindow):
     # ── 15Hz UI 갱신 ──────────────────────────────────────────────────────────
     def _tick(self):
         now = time.time()
+        now_mono = time.monotonic()
 
         from datetime import datetime
         self._time_label.setText(datetime.now().strftime("%H:%M:%S"))
@@ -752,36 +762,47 @@ class DashboardWindow(QMainWindow):
             f"font-size: 18px; font-weight: bold;")
         v = cmd_vel.linear.x if cmd_vel else 0.0
         w = cmd_vel.angular.z if cmd_vel else 0.0
+        st, ls, rs = self._motion
         self._vla_details.setText(
             f"latency: {self._status.get('latency_ms', 0):.0f} ms    "
             f"queue: {self._status.get('queue', '—')}/30\n"
             f"underrun: {self._status.get('underrun_pct', 0):.2f} %    "
-            f"cmd_vel: v {v:+.2f}  w {w:+.2f}")
+            f"cmd_vel: v {v:+.2f}  w {w:+.2f}\n"
+            f"Steer: {st:+d} ({st * 5:+d}°)    L: {ls}    R: {rs}")
         self._vla_reasoning.setText(self._instruction)
 
-        # Pose → 트랙맵 + Age Gate
+        # ★좌하단: 정합 BEV 신선하면 그것, 아니면 도안+pose 트랙맵 폴백
+        bev_fresh = (self._ros.last_bev_aligned_mono is not None
+                     and now_mono - self._ros.last_bev_aligned_mono < 2.0)
+        if self._ros.buf_bev_aligned:
+            self._bev_aligned.update_frame(
+                self._ros.buf_bev_aligned.popleft(),
+                C_RED if self._geofence else None)
+            self._ros.node_alive["bev_map"] = now
+        self._map_stack.setCurrentIndex(0 if bev_fresh else 1)
+
+        # Pose → (폴백) 트랙맵 + Age Gate
         pose = self._ros.buf_pose[0] if self._ros.buf_pose else None
         if pose:
             self._pose = pose
             self._ros.node_alive["pose"] = now
         stale = pose_age_s is None or pose_age_s > POSE_STALE_S
-        self._track_map.update_map(
-            self._pose, list(self._ros.pose_trail), stale, self._geofence)
+        if not bev_fresh:
+            self._track_map.update_map(
+                self._pose, list(self._ros.pose_trail), stale, self._geofence)
         if pose_age_s is not None:
             self._ttl_bar.add_sample(pose_age_s * 1000.0, POSE_STALE_S * 1000.0)
 
-        # Motion command
+        # Motion command (라벨 제거 — VLA Policy 패널에 표기)
         if self._ros.buf_cmd:
             cmd = self._ros.buf_cmd.popleft()
-            steer_deg = cmd.steering * 5
-            self._motion_label.setText(
-                f"Steer: {cmd.steering:+d} ({steer_deg:+d}°)    "
-                f"L: {cmd.left_speed}    R: {cmd.right_speed}")
+            self._motion = (cmd.steering, cmd.left_speed, cmd.right_speed)
             self._ros.node_alive["cmd"] = now
 
         # Node health
         health_parts = []
-        for name in ["scene", "bev", "debug", "lane", "status", "cmd_vel", "pose", "cmd"]:
+        for name in ["scene", "bev", "debug", "lane", "status",
+                     "cmd_vel", "pose", "cmd", "bev_map"]:
             last = self._ros.node_alive.get(name, 0)
             alive = (now - last) < 3.0
             dot = (f"<span style='color:{C_GREEN}'>●</span>" if alive

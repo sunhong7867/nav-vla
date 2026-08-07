@@ -27,6 +27,8 @@ setup(
     entry_points={
         'console_scripts': [
             'track_pose_node = track_localizer_pkg.track_pose_node:main',
+            'aligned_bev_publisher = '
+            'track_localizer_pkg.aligned_bev_publisher:main',
         ],
     },
 )
