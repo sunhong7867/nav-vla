@@ -77,4 +77,16 @@ qqq
 ros2 launch simulation_pkg mission_sim.launch.py
 ```
 
+SmolVLA checkpoint demo:
+
+```bash
+./setup_smolvla_demo.sh --install-ros-deps
+# Copy the ckpt_v6_60k directory into models/, then:
+./smolvla_demo.sh check
+./smolvla_demo.sh
+```
+
+See [Thor SmolVLA demo setup](docs/thor_smolvla_demo.md) for the portable venv,
+checkpoint transfer, run, and shutdown procedure.
+
 See [docs/quickstart.md](docs/quickstart.md) for a compact command list.

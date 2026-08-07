@@ -1,0 +1,6 @@
+# The policy checkpoint was trained and validated with LeRobot 0.4.4.
+# torch/torchvision are intentionally not pinned: Jetson/Thor must use the
+# NVIDIA JetPack-compatible wheels, while x86 CUDA hosts use PyPI wheels.
+lerobot==0.4.4
+msgpack==1.2.1
+pyzmq==27.1.0

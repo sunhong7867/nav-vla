@@ -3,17 +3,46 @@
 #
 #   ./smolvla_demo.sh                # v6 데모 스택 전체 기동 (시뮬+서버+브리지+내비+내레이터+채팅GUI)
 #   ./smolvla_demo.sh --ckpt models/ckpt_v7_60k   # 다른 체크포인트로
+#   NAVVLA_VENV=~/venv/navvla ./smolvla_demo.sh    # 정책 서버 venv 지정
 #   ./smolvla_demo.sh --no-gui       # 채팅 GUI 없이 (문장은 ros2 topic pub로)
+#   ./smolvla_demo.sh check          # 실행 전 환경만 점검
 #   ./smolvla_demo.sh down           # 전체 종료 + gz 로그 정리
 #
 # 로그: eval_out/demo/*.log
 WS="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 LOGD=$WS/eval_out/demo
-CKPT=$WS/models/ckpt_v6_60k
+CKPT=${NAVVLA_CKPT:-$WS/models/ckpt_v6_60k}
+VENV=${NAVVLA_VENV:-$HOME/venv/navvla}
+POLICY_PYTHON=${NAVVLA_PYTHON:-$VENV/bin/python}
 GUI=1
 
-source /opt/ros/jazzy/setup.bash
-source "$WS/install/setup.bash"
+ROS_SETUP=/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
+
+preflight() {
+  local failed=0
+  [ -f "$ROS_SETUP" ] || { echo "[demo] ROS 환경 없음: $ROS_SETUP"; failed=1; }
+  [ -f "$WS/install/setup.bash" ] || {
+    echo "[demo] 워크스페이스 미빌드: ./setup_smolvla_demo.sh 실행 필요"
+    failed=1
+  }
+  [ -x "$POLICY_PYTHON" ] || {
+    echo "[demo] 정책 Python 없음: $POLICY_PYTHON"
+    echo "       NAVVLA_VENV 또는 NAVVLA_PYTHON으로 경로 지정 가능"
+    failed=1
+  }
+  [ -f "$CKPT/model.safetensors" ] || {
+    echo "[demo] 체크포인트 없음: $CKPT/model.safetensors"
+    echo "       --ckpt 또는 NAVVLA_CKPT로 경로 지정 가능"
+    failed=1
+  }
+  if [ "$failed" -eq 0 ]; then
+    "$POLICY_PYTHON" -c 'import lerobot, msgpack, zmq, torch' 2>/dev/null || {
+      echo "[demo] venv에 lerobot/msgpack/pyzmq/torch 중 일부가 없습니다."
+      failed=1
+    }
+  fi
+  [ "$failed" -eq 0 ]
+}
 
 kill_stack() {
   # pkill 자기매칭 방지: 패턴을 쪼개서 자기 자신(cmdline에 전체 문자열 없음)만 피함
@@ -41,6 +70,12 @@ if [ "${1:-}" = "down" ]; then
   exit 0
 fi
 
+if [ "${1:-}" = "check" ]; then
+  CKPT="$(readlink -f "$CKPT")"
+  preflight && echo "[demo] 실행 환경 정상"
+  exit $?
+fi
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --ckpt) CKPT="$2"; shift 2 ;;
@@ -49,7 +84,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 CKPT="$(readlink -f "$CKPT")"
-[ -f "$CKPT/model.safetensors" ] || { echo "체크포인트 없음: $CKPT"; exit 2; }
+preflight || exit 2
+source "$ROS_SETUP"
+source "$WS/install/setup.bash"
 mkdir -p "$LOGD"
 
 echo "[demo] 이전 스택 정리 + DDS 초기화..."
@@ -66,7 +103,7 @@ setsid nohup ros2 launch simulation_pkg driving_sim.launch.py use_camera:=true \
 sleep 25
 
 echo "[demo] 2/5 정책 서버 기동: $CKPT"
-setsid nohup /home/sh/venv/navvla/bin/python -u \
+setsid nohup "$POLICY_PYTHON" -u \
   "$WS/src/nav_vla_pkg/scripts/vla_policy_server.py" \
   --checkpoint "$CKPT" --endpoint ipc:///tmp/nav_vla.sock --warmup 4 \
   > "$LOGD/serve.log" 2>&1 < /dev/null &
