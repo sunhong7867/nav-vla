@@ -131,6 +131,10 @@ class ActionQueue:
             self.popped += 1
             return self._q.popleft()
 
+    def snapshot(self):
+        with self._lock:
+            return [list(a) for a in self._q]
+
     def splice(self, chunk):
         """Blend `chunk` into the tail with a linear cross-fade.
 
@@ -190,6 +194,30 @@ class VlaBridge(Node):
         # Watchdog zeroing bypasses both (safety path must stay instant).
         self.speed_scale = float(self.declare_parameter("speed_scale", 1.0).value)
         self.speed_slew = float(self.declare_parameter("speed_slew", 0.0).value)
+        # Experimental curvature-proportional steering boost (default OFF).
+        # Ring probes showed that values above 1.0 amplify S-curve overshoot,
+        # so this remains available for controlled comparisons only. The
+        # factor ramps from 1.0 at curv_boost_lo to curv_boost at
+        # curv_boost_hi; the physical MAX_CURVATURE clamp still applies.
+        self.curv_boost = float(self.declare_parameter("curv_boost", 1.0).value)
+        self.curv_boost_lo = float(
+            self.declare_parameter("curv_boost_lo", 0.05).value)
+        self.curv_boost_hi = float(
+            self.declare_parameter("curv_boost_hi", 0.10).value)
+        # Path-tracking mode (default "replay" = execute actions step by step).
+        # "pursuit": integrate the REMAINING queue into an ego-frame path each
+        # tick and steer at a speed-scaled lookahead point on it (pure
+        # pursuit). Replay executes the per-step dyaw predicted seconds ago,
+        # which holds corner steering past the exit; pursuit sees the
+        # straightening path ahead and unwinds geometrically. Speed still
+        # comes from the popped action (same shaping as replay).
+        self.track_mode = str(self.declare_parameter("track_mode", "replay").value)
+        self.pursuit_base_lookahead = float(
+            self.declare_parameter("pursuit_base_lookahead", 1.2).value)
+        self.pursuit_lookahead_gain = float(
+            self.declare_parameter("pursuit_lookahead_gain", 0.5).value)
+        self.pursuit_max_lookahead = float(
+            self.declare_parameter("pursuit_max_lookahead", 3.0).value)
 
         self.bridge = CvBridge()
         self.obs = LatestObservation()
@@ -373,8 +401,18 @@ class VlaBridge(Node):
             if v < lo or v > hi:
                 v = min(max(v, lo), hi)
                 override = "slew"
+        if self.track_mode == "pursuit":
+            k_pursuit = self._pursuit_curvature(a, abs(v))
+            if k_pursuit is not None:
+                k_raw = k_pursuit
         if k_raw is not None:
             k = k_raw
+            if self.curv_boost > 1.0:
+                span = max(1e-6, self.curv_boost_hi - self.curv_boost_lo)
+                t = min(1.0, max(0.0, (abs(k) - self.curv_boost_lo) / span))
+                if t > 0.0:
+                    k *= 1.0 + (self.curv_boost - 1.0) * t
+                    override = "curv_boost"
             if abs(k) > MAX_CURVATURE:
                 k = math.copysign(MAX_CURVATURE, k)
                 override = "clamp_curvature"
@@ -382,6 +420,46 @@ class VlaBridge(Node):
         else:
             w = w_raw
         self._publish(v, w, override=override)
+
+    def _pursuit_curvature(self, popped, speed):
+        """Curvature toward a lookahead point on the predicted path.
+
+        The popped action plus the remaining queue are ego-frame SE(2) deltas
+        from the CURRENT pose, so integrating them yields the policy's
+        predicted path in the current ego frame — no odometry involved. Pure
+        pursuit on that path anticipates what step-replay cannot: when the
+        path straightens after a corner, the lookahead point crosses onto the
+        straight and steering unwinds immediately instead of after the stale
+        turning steps have been replayed.
+
+        Returns None when the path is degenerate (fewer than 2 points or
+        shorter than half the base lookahead) — caller falls back to replay.
+        """
+        path = [popped] + self.queue.snapshot()
+        if len(path) < 2:
+            return None
+        lookahead = min(self.pursuit_max_lookahead,
+                        self.pursuit_base_lookahead
+                        + self.pursuit_lookahead_gain * speed)
+        x = y = yaw = 0.0
+        arc = 0.0
+        target = None
+        for dx, dy, dyaw in path:
+            c, s = math.cos(yaw), math.sin(yaw)
+            x += c * dx - s * dy
+            y += s * dx + c * dy
+            yaw += dyaw
+            arc += math.hypot(dx, dy)
+            target = (x, y)
+            if arc >= lookahead:
+                break
+        if target is None or arc < 0.5 * self.pursuit_base_lookahead:
+            return None
+        dist = math.hypot(target[0], target[1])
+        if dist < 1e-3:
+            return None
+        alpha = math.atan2(target[1], max(target[0], 1e-3))
+        return 2.0 * math.sin(alpha) / dist
 
     def _publish(self, v, w, override="none"):
         t = Twist()

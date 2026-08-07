@@ -36,8 +36,14 @@ TURN_YAW_RAD = 0.45            # |sum dyaw| over a chunk that counts as a turn.
                                # 0.20 fired constantly: the ring's gentle CCW
                                # curvature alone sums to ~0.2-0.4 per 3 s chunk,
                                # so only sharper-than-ring turns should speak.
-CURV_TIGHT = 0.12              # 1/m: above -> 곡선 구간
-CURV_STRAIGHT = 0.05           # 1/m: below -> 직선 구간
+CURV_TIGHT = 0.095             # 1/m: above -> 곡선 구간. The ring's own
+                               # curvature tops out at ~0.12, so the old 0.12
+                               # bar classified NOTHING as a curve and the
+                               # tight corners all read "완만한 곡선".
+                               # Measured over ring_center (±3 idx window):
+                               # p75=0.090, p90=0.114 — 0.095 puts the top
+                               # ~quarter (the actual corners) in 곡선 구간.
+CURV_STRAIGHT = 0.05           # 1/m: below -> 직선 구간 (~37% of the ring)
 ZONE_RADIUS_M = 8.0            # announce a zone approach inside this radius
 MIN_GAP_S = 2.0                # minimum spacing between published lines
 

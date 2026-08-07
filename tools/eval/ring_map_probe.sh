@@ -1,6 +1,7 @@
 #!/bin/bash
 # Full-ring mapping probe for a policy checkpoint.
 # Usage: ring_map_probe.sh <checkpoint_dir> <out_prefix>
+#   EXTRA_BRIDGE_ARGS="-p curv_boost:=1.2" 처럼 환경변수로 브리지 파라미터 추가 가능
 # Brings up bare sim + server + bridge, runs the standard inner/outer 115 s
 # counterfactual cruise from the canonical start, writes <out_prefix>_map.json,
 # then tears the server/bridge down (sim left up for chained probes).
@@ -33,6 +34,7 @@ until grep -q 'serving on' $OUT/${PFX}_serve.log 2>/dev/null; do sleep 3; done
 
 setsid nohup ros2 run nav_vla_pkg vla_bridge_node --ros-args -p use_sim_time:=true \
   -p max_speed:=3.2 -p image_topic:=/camera/image_raw -p speed_slew:=0.08 \
+  ${EXTRA_BRIDGE_ARGS:-} \
   > $OUT/${PFX}_bridge.log 2>&1 < /dev/null &
 sleep 4
 
@@ -42,8 +44,8 @@ echo "cmd_vel publishers: $NPUB"
 
 python3 $WS/src/nav_vla_pkg/scripts/probe_policy_counterfactual.py \
   --x -1.49 --y 24.55 --yaw -1.571 --duration 115 \
-  --say-a "Start driving in the inner lane, at a fast speed." \
-  --say-b "Start driving in the outer lane, at a fast speed." \
+  --say-a "Start driving in the inner lane, at a ${SPEED_WORD:-fast} speed." \
+  --say-b "Start driving in the outer lane, at a ${SPEED_WORD:-fast} speed." \
   --out $OUT/${PFX}_map.json > $OUT/${PFX}_probe.log 2>&1
 
 pat_s='vla_policy_serve'; pkill -f "${pat_s}r" || true; pat_b='vla_bridge_nod'; pkill -f "${pat_b}e" || true
