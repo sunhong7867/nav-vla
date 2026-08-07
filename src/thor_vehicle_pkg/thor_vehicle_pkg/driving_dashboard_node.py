@@ -406,7 +406,9 @@ class DashboardWindow(QMainWindow):
         self._ros = ros_node
 
         self.setWindowTitle("nav-vla Operator Dashboard")
-        self.setFixedSize(1500, 960)
+        # 높이 = 콘텐츠 실측(타이틀 36 + 카메라 315 + 하단 340 + 퀵 40 + 여백)
+        # — 크게 잡으면 퀵버튼 위에 죽은 공백이 생긴다 (2026-08-07 사용자 지적)
+        self.setFixedSize(1500, 780)
         self.setStyleSheet(GLOBAL_QSS)
 
         self._mode = "IDLE"

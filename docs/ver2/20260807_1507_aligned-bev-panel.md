@@ -46,7 +46,7 @@ ros2 run track_localizer_pkg aligned_bev_publisher     # ★신규 — 대시보
   🚗 프리픽스로 상황 라인 표시 — "M2 접근 · 좌회전 예정" 등. 합성 발행으로
   표시 검증. **실차에서는 narrator에 pose 입력 어댑터(TF→/track pose)가
   붙어야 살아난다** — 후속 항목
-- 정합 BEV 패널과 로그창 높이 340으로 정렬
+- 정합 BEV 패널과 로그창 높이 340으로 정렬. 창 높이 960→780 (퀵버튼 위 죽은 공백 제거)
 
 ## 미해결
 
