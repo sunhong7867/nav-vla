@@ -4,3 +4,6 @@
 lerobot==0.4.4
 msgpack==1.2.1
 pyzmq==27.1.0
+# SmolVLM processor가 요구하는데 lerobot 0.4.4 의존성 트리에 빠져 있음
+# (Thor 클린 venv에서 서버 기동 실패로 발견, 2026-08-07)
+num2words==0.5.14

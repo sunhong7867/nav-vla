@@ -21,6 +21,10 @@ ROS_SETUP=/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
 preflight() {
   local failed=0
   [ -f "$ROS_SETUP" ] || { echo "[demo] ROS 환경 없음: $ROS_SETUP"; failed=1; }
+  command -v gz >/dev/null || {
+    echo "[demo] Gazebo(gz) 없음: sudo apt install ros-jazzy-ros-gz"
+    failed=1
+  }
   [ -f "$WS/install/setup.bash" ] || {
     echo "[demo] 워크스페이스 미빌드: ./setup_smolvla_demo.sh 실행 필요"
     failed=1
