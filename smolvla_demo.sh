@@ -21,7 +21,9 @@ ROS_SETUP=/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
 preflight() {
   local failed=0
   [ -f "$ROS_SETUP" ] || { echo "[demo] ROS 환경 없음: $ROS_SETUP"; failed=1; }
-  command -v gz >/dev/null || {
+  # gz는 Jazzy 벤더 패키지라 ROS를 source해야 PATH에 뜬다 — 서브셸에서 검사
+  ( [ -f "$ROS_SETUP" ] && . "$ROS_SETUP" >/dev/null 2>&1
+    command -v gz >/dev/null ) || {
     echo "[demo] Gazebo(gz) 없음: sudo apt install ros-jazzy-ros-gz"
     failed=1
   }
