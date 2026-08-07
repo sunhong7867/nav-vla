@@ -16,6 +16,7 @@
 
 | 날짜 | 문서 | 요약 |
 |---|---|---|
+| 2026-08-07 14:52 | [대시보드 재작업: VLA_AD 이식](20260807_1452_dashboard-vlaad-port.md) | 14:45 미니멀판은 **요구 오독으로 폐기** — `operator_gui_pkg` 866줄을 디자인·레이아웃·위젯 그대로 이식, 좌하단만 트랙맵 교체. TTL바→Pose Age Gate(0.5 s), E2E바→Policy Latency(기준 300 ms), STOP=estop+빈문장 이중 정지. 모의 피드+스크린샷 검증 |
 | 2026-08-07 14:45 | [주행 대시보드](20260807_1445_driving-dashboard.md) | `driving_dashboard` 신설(PySide6) — 카메라 + **좌하단 트랙맵·차량위치·궤적**(캐노니컬 프레임 재사용) + 지연/큐·명령·MotionCommand·**E-STOP 버튼**. `thor_car_demo.sh`에 자동 기동 통합. 모의 데이터 실기동 + 스크린샷 육안 검증 |
 | 2026-08-07 14:30 | [실차 첫날 준비](20260807_1430_real-car-day-prep.md) | 내일 차량 작업을 체크리스트화 — 브리지 **CompressedImage 직수신**(스텁 폐루프 121건 PASS), `wheels_up_test` 6항목 커맨더(dry-run PASS), `thor_car_demo.sh`(full 모드는 **STEER_SIGN 명시 전 거부** — wheels-up 건너뛰기 구조적 차단). 속도 상한 60/255·1.0 m/s 보수 설정 |
 | 2026-08-07 13:17 | [시뮬 데모 Thor 완주](20260807_1317_sim-demo-on-thor.md) | **회색 화면 진범 = GUI ogre1 (aarch64)** — 카메라 프레임 캡처로 서버측 무혐의 입증 후 ogre2 전환(런치가 아키텍처별 자동 선택, 노트북 무변경). 하드코딩 `~/ROS2_project` 8곳+는 심링크로 우회. **폐루프 주행 확인**: cmd_vel 8.1 Hz, 동시부하 지연 289~299 ms(+25%), underrun 1~3%, 내레이터 정상 |
