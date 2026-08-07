@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import platform
 import re
 import tempfile
 
@@ -243,7 +244,13 @@ def generate_launch_description():
                         "sleep 1; "
                         "done; "
                         f"ruby /opt/ros/jazzy/opt/gz_tools_vendor/bin/gz sim -g --gui-config {gui_config} "
-                        "--render-engine-gui ogre --force-version 8"
+                        # GUI 렌더러: x86 노트북은 기존 ogre 유지, aarch64(Jetson
+                        # Thor)는 ogre1이 회색 화면으로 죽어 ogre2가 필수
+                        # (2026-08-07 실측 — 서버측 카메라는 어느 쪽이든 ogre2).
+                        # NAVVLA_GUI_RENDER_ENGINE 환경변수로 강제 가능.
+                        f"--render-engine-gui "
+                        f"{os.environ.get('NAVVLA_GUI_RENDER_ENGINE', 'ogre2' if platform.machine() == 'aarch64' else 'ogre')} "
+                        "--force-version 8"
                     ],
                     output="screen",
                 ),
