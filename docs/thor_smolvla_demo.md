@@ -1,5 +1,7 @@
 # Thor에서 SmolVLA 시뮬레이션 실행
 
+> **스냅샷 주의 (2026-08-24 부기):** 이 문서는 2026-08-07 이전 시점 기준이다. 이후 변경 — v8/v8g 방향·직행 축, "직행은 좌표 내비 위임, v8g는 순항+반응형 전담" 결정(08-24) — 은 [ver/README.md](ver/README.md) 참조.
+
 이 문서는 새로 clone한 Thor 환경에서 Gazebo SmolVLA 데모를 실행하는 최소 절차다.
 ROS 2 Jazzy와 Gazebo Harmonic(`ros-jazzy-ros-gz`)이 설치돼 있다고 가정한다.
 
