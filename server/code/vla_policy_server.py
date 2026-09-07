@@ -8,6 +8,9 @@ torch/transformers/av; making them agree is a fight with no prize.
 
     ->  {"jpeg": bytes, "state": [3]f32, "task": str, "seed": int, "req": int, "tick": int}
     <-  {"actions": [[dx, dy, dyaw], ...]}
+        (+ "reasoning": str, "reasoning_req": int when --reasoning-every is
+         on and the checkpoint carries a reasoning head; the bridge ignores
+         unknown keys, so old bridges are unaffected)
 
 Warm-up is not optional
 -----------------------
@@ -40,6 +43,21 @@ import argparse
 import io
 import sys
 import time
+
+
+def has_reasoning_head(checkpoint):
+    """True if the checkpoint was trained by reasoning_vla (extra CE head)."""
+    import glob
+    import os
+    try:
+        from safetensors import safe_open
+        for f in glob.glob(os.path.join(checkpoint, "model*.safetensors")):
+            with safe_open(f, framework="pt") as sf:
+                if any(k.startswith("reasoning_head") for k in sf.keys()):
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def build_policy(args, device):
@@ -75,6 +93,23 @@ def build_policy(args, device):
         return SmolVLAPolicy(cfg)
 
     print(f"loading {args.checkpoint}")
+    if args.reasoning_every > 0 and has_reasoning_head(args.checkpoint):
+        # reasoning_vla lives one dir above scripts/ in the repo layout,
+        # but right next to this file in the server's flat code/ snapshot
+        import os
+        import sys as _sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        for cand in (os.path.dirname(here), here):
+            if cand not in _sys.path:
+                _sys.path.insert(0, cand)
+        from reasoning_vla import ReasoningSmolVLAPolicy
+        print("reasoning head found — serving reasoning text every "
+              f"{args.reasoning_every} requests")
+        return ReasoningSmolVLAPolicy.from_pretrained(args.checkpoint)
+    if args.reasoning_every > 0:
+        print("--reasoning-every set but checkpoint has no reasoning head; "
+              "serving actions only")
+        args.reasoning_every = 0
     return SmolVLAPolicy.from_pretrained(args.checkpoint)
 
 
@@ -90,6 +125,12 @@ def main():
     p.add_argument("--compile", action="store_true")
     p.add_argument("--warmup", type=int, default=8)
     p.add_argument("--camera-key", default="observation.images.front")
+    p.add_argument("--reasoning-every", type=int, default=0, metavar="N",
+                   help="decode reasoning text on a side thread every Nth "
+                        "request (0 = off; needs a reasoning_vla checkpoint)")
+    p.add_argument("--reasoning-log", default="",
+                   help="jsonl file to append {req, task, reasoning} rows "
+                        "(for probes)")
     args = p.parse_args()
 
     if not args.checkpoint and not args.random_init:
@@ -155,6 +196,27 @@ def main():
         out = postproc(out)
         return out.squeeze(0).float().cpu().numpy()
 
+    # State width comes from the normalizer stats, not config.input_features:
+    # the config carries smolvla_base's pretrained shapes (state [6], ghost
+    # cameras) while the stats hold what this run actually trained on, and the
+    # normalizer rejects any other width outright.
+    state_dim = 3
+    try:
+        import glob as _glob
+        from safetensors import safe_open
+        cand = sorted(_glob.glob(
+            f"{args.checkpoint}/*preprocessor*normalizer*.safetensors"))
+        if cand:
+            with safe_open(cand[0], framework="pt") as f:
+                state_dim = f.get_tensor("observation.state.mean").shape[0]
+        else:
+            state_dim = policy.config.input_features[
+                "observation.state"].shape[0]
+    except Exception:
+        pass
+    print(f"state dim: {state_dim}")
+    zero_state = [0.0] * state_dim
+
     # Warm up before binding: a client that connects can immediately be served.
     blank = Image.fromarray(
         (np.zeros((480, 640, 3), dtype=np.uint8) + 128))
@@ -167,7 +229,7 @@ def main():
     lat = []
     for i in range(max(1, args.warmup)):
         t0 = time.monotonic()
-        a = infer(dummy, [0.0, 0.0, 0.0], "warmup", 0)
+        a = infer(dummy, zero_state, "warmup", 0)
         dt = (time.monotonic() - t0) * 1000.0
         lat.append(dt)
         if i == 0:
@@ -184,6 +246,51 @@ def main():
               f"{args.chunk_len / 10.0:.1f}s, so this still keeps up, but "
               "measure underrun during the first trial.")
 
+    # ---- reasoning side channel (never on the action path) ----------------
+    # The decode is autoregressive (~1-2 s for 60 tokens with the naive
+    # re-forward generate), far beyond the 10 Hz budget, so it runs on a
+    # worker thread over a one-slot mailbox: the main loop deposits the
+    # latest inputs every Nth request and replies immediately with the most
+    # recent finished text. CUDA kernels from the two threads serialize per
+    # forward, so the action pass waits at most one decode step (~30 ms).
+    reasoning = {"text": "", "req": -1}
+    r_slot = []
+    if args.reasoning_every > 0:
+        import json as _json
+        import threading
+
+        r_cv = threading.Condition()
+
+        def _reasoning_worker():
+            while True:
+                with r_cv:
+                    while not r_slot:
+                        r_cv.wait()
+                    jpeg, st, task, rid = r_slot.pop()
+                try:
+                    img = np.asarray(
+                        Image.open(io.BytesIO(jpeg)).convert("RGB"))
+                    t_img = (torch.from_numpy(img).permute(2, 0, 1).float()
+                             / 255.0).unsqueeze(0)
+                    b = {args.camera_key: t_img,
+                         "observation.state": torch.tensor(
+                             st, dtype=torch.float32).unsqueeze(0),
+                         "task": [task]}
+                    b = preproc(b)
+                    with torch.inference_mode():
+                        text = policy.generate_reasoning(b)[0]
+                    reasoning["text"], reasoning["req"] = text, rid
+                    if args.reasoning_log:
+                        with open(args.reasoning_log, "a") as f:
+                            f.write(_json.dumps(
+                                {"req": rid, "task": task,
+                                 "reasoning": text},
+                                ensure_ascii=False) + "\n")
+                except Exception as e:   # never take the server down
+                    print(f"reasoning decode failed: {e}", file=sys.stderr)
+
+        threading.Thread(target=_reasoning_worker, daemon=True).start()
+
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.REP)
     sock.bind(args.endpoint)
@@ -194,12 +301,21 @@ def main():
         while True:
             req = msgpack.unpackb(sock.recv(), raw=False)
             t0 = time.monotonic()
-            a = infer(req["jpeg"], req.get("state", [0.0, 0.0, 0.0]),
+            a = infer(req["jpeg"], req.get("state", zero_state),
                       req.get("task", ""), req.get("seed", 0))
             rlat.append((time.monotonic() - t0) * 1000.0)
-            sock.send(msgpack.packb(
-                {"actions": [[float(x) for x in row] for row in a]},
-                use_bin_type=True))
+            rep = {"actions": [[float(x) for x in row] for row in a]}
+            if args.reasoning_every > 0:
+                if served % args.reasoning_every == 0 and req.get("task"):
+                    with r_cv:
+                        r_slot[:] = [(req["jpeg"],
+                                      req.get("state", zero_state),
+                                      req.get("task", ""), req.get("req", 0))]
+                        r_cv.notify()
+                if reasoning["req"] >= 0:
+                    rep["reasoning"] = reasoning["text"]
+                    rep["reasoning_req"] = reasoning["req"]
+            sock.send(msgpack.packb(rep, use_bin_type=True))
             served += 1
             if served % 20 == 0:
                 w = rlat[-20:]

@@ -197,7 +197,12 @@ def resample_episode(ep_dir, fps=10, verbose=False, yaw_offset=0.0,
                 "Nothing is publishing /clock while use_sim_time is true."
             )
             return result
-        if uniq < 0.5 * len(ts):
+        # Since clock_throttle_node (2026-08-28) /clock ticks at 100 Hz, so
+        # a 58 Hz tf stream legitimately shares stamps ~40-58% of the time
+        # (measured, v9 pilot 2026-09-04: 85/97 episodes rejected by the old
+        # 50% bar). The stopped-clock case this exists for shows ~100%
+        # duplicates; 85% still catches it while passing quantization.
+        if uniq < 0.15 * len(ts):
             result["reason"] = (
                 f"{stream_name}.jsonl timestamps are {100 * (1 - uniq / len(ts)):.0f}% "
                 f"duplicates ({uniq}/{len(ts)} distinct) — clock resolution is "

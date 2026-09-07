@@ -56,7 +56,7 @@ from std_msgs.msg import String  # noqa: E402
 from tf2_msgs.msg import TFMessage  # noqa: E402
 
 from nav_vla_pkg.gz_pose import query_world_pose, resolve_gz_bin  # noqa: E402
-from nav_vla_pkg.gz_reset import SimResetter  # noqa: E402
+from nav_vla_pkg.gz_reset import SimResetter, pause_sim  # noqa: E402
 
 # Same start the corpus used: on the ring->aisle connector, model yaw for
 # heading-along-connector (heading + 90 deg, YAW_OFFSET convention).
@@ -118,6 +118,20 @@ def resample_arclen(P, step=0.2):
     return out
 
 
+def text_divergence(lines_a, lines_b):
+    """1 - Jaccard over word sets of the two reasoning streams.
+
+    Crude on purpose: it only needs to separate "same narration" from
+    "different narration" relative to the SAME-sentence floor, mirroring
+    how D_shape is only read against its own floor.
+    """
+    ta = {w for line in lines_a for w in line.lower().split()}
+    tb = {w for line in lines_b for w in line.lower().split()}
+    if not ta and not tb:
+        return 0.0
+    return 1.0 - len(ta & tb) / max(1, len(ta | tb))
+
+
 def shared_prefix_m(A, B, tol=0.30, step=0.2):
     RA, RB = resample_arclen(A, step), resample_arclen(B, step)
     run = 0.0
@@ -140,16 +154,31 @@ class Probe(Node):
                              durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
                              depth=1)
         self.instr_pub = self.create_publisher(String, "/vla/instruction", latched)
+        self.goal_pub = self.create_publisher(String, "/vla_goal", latched)
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         qos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT,
                          history=QoSHistoryPolicy.KEEP_LAST,
                          durability=QoSDurabilityPolicy.VOLATILE, depth=5)
         self.create_subscription(TFMessage, args.tf_topic, self._tf_cb, qos)
         self.create_subscription(String, "/vla/status", self._status_cb, 10)
+        self.create_subscription(String, "/vla/plan", self._plan_cb, 10)
+        # Reasoning text stream (reasoning_vla server + bridge republish).
+        # Silent topic on a plain checkpoint — the list just stays empty.
+        self.create_subscription(String, "/vla/reasoning",
+                                 self._reasoning_cb, 10)
+        self.reasoning_lines = []
         self.tf = None
         self.idx = None
         self.status = {}
+        self.status_events = []
+        self.plan_count = 0
         self.reset = SimResetter(gz_bin=self.gz, logger=self.get_logger())
+
+    def _reasoning_cb(self, msg):
+        try:
+            self.reasoning_lines.append(json.loads(msg.data).get("text", ""))
+        except Exception:
+            self.reasoning_lines.append(msg.data)
 
     def _tf_cb(self, msg):
         if self.idx is None:
@@ -168,19 +197,24 @@ class Probe(Node):
     def _status_cb(self, msg):
         try:
             self.status = json.loads(msg.data)
+            self.status_events.append(self.status)
         except (json.JSONDecodeError, TypeError):
             pass
+
+    def _plan_cb(self, _msg):
+        self.plan_count += 1
 
     def _spin(self, seconds):
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             rclpy.spin_once(self, timeout_sec=0.02)
 
-    def run_once(self, sentence):
+    def run_once(self, sentence, goal=""):
         a = self.args
         # Silence first: an empty instruction makes the bridge flush its queue
         # and stop asking for chunks, so the reset happens with the car passive.
         self.instr_pub.publish(String(data=""))
+        self.goal_pub.publish(String(data="none"))
         self._spin(0.5)
         ok, msg, _ = self.reset.reset(a.x, a.y, a.yaw, cmd_pub=self.cmd_pub)
         if not ok:
@@ -188,13 +222,61 @@ class Probe(Node):
             return None
         self._spin(a.settle_s)
 
+        # Goal-conditioned bridges (goal_conditioning:=true) read /vla_goal;
+        # plain bridges have no subscriber and the publish is inert.
+        self.goal_pub.publish(String(data=goal or "none"))
+        self.reasoning_lines = []
+        self.status_events = []
+
+        # Arm the policy while simulation time is stopped.  The bridge control
+        # timer uses simulation time, whereas its inference worker uses wall
+        # time.  Pausing here therefore lets the first action chunk arrive
+        # without consuming control ticks or manufacturing startup underruns.
+        ok, msg = pause_sim(self.gz, True)
+        if not ok:
+            print(f"  prefill pause failed: {msg}", file=sys.stderr)
+            return None
+        before = self.plan_count
+        prefill_t0 = time.monotonic()
         self.instr_pub.publish(String(data=sentence))
+        deadline = prefill_t0 + a.prefill_timeout_s
+        while self.plan_count <= before and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.02)
+            time.sleep(0.01)
+        prefill_s = time.monotonic() - prefill_t0
+        if self.plan_count <= before:
+            pause_sim(self.gz, False)
+            self.instr_pub.publish(String(data=""))
+            print(f"  first action chunk did not arrive within "
+                  f"{a.prefill_timeout_s:.1f}s", file=sys.stderr)
+            return None
+        ok, msg = pause_sim(self.gz, False)
+        if not ok:
+            self.instr_pub.publish(String(data=""))
+            print(f"  prefill unpause failed: {msg}", file=sys.stderr)
+            return None
+
         track, t0 = [], time.monotonic()
         while time.monotonic() - t0 < a.duration:
             rclpy.spin_once(self, timeout_sec=0.02)
             if self.tf:
                 track.append(self.tf)
             time.sleep(0.04)
+        run_status = {
+            "watchdog_hits": max(
+                (int(e.get("watchdog_hits", 0)) for e in self.status_events),
+                default=0),
+            "underrun_pct": max(
+                (float(e.get("underrun_pct", 0.0)) for e in self.status_events),
+                default=0.0),
+            "latency_ms": next(
+                (float(e["latency_ms"]) for e in reversed(self.status_events)
+                 if "latency_ms" in e), None),
+            "prefill_s": prefill_s,
+            "contract": next(
+                (e["contract"] for e in reversed(self.status_events)
+                 if "contract" in e), None),
+        }
         self.instr_pub.publish(String(data=""))
         self._spin(0.5)
 
@@ -202,7 +284,7 @@ class Probe(Node):
         for p in track[1:]:
             if math.hypot(p[0] - thin[-1][0], p[1] - thin[-1][1]) > 0.2:
                 thin.append(p)
-        return thin
+        return thin, list(self.reasoning_lines), run_status
 
     def run(self):
         a = self.args
@@ -214,15 +296,17 @@ class Probe(Node):
             print("no ego in dynamic_pose — is the sim running?", file=sys.stderr)
             return 1
 
-        pairs = [("SAME sentence (noise floor)", a.say_a, a.say_a),
-                 ("DIFFERENT bay", a.say_a, a.say_b)]
+        pairs = [("SAME sentence (noise floor)",
+                  (a.say_a, a.goal_a), (a.say_a, a.goal_a)),
+                 (a.case_label,
+                  (a.say_a, a.goal_a), (a.say_b, a.goal_b))]
         print(f"start ({a.x:.2f}, {a.y:.2f}), {a.duration:.0f}s per run, "
               f"{a.repeats} repeat(s)\n")
         results = []
-        for name, sa, sb in pairs:
+        for name, (sa, ga), (sb, gb) in pairs:
             for rep in range(a.repeats):
-                A = self.run_once(sa)
-                B = self.run_once(sb)
+                A, reasA, statA = self.run_once(sa, ga) or (None, [], {})
+                B, reasB, statB = self.run_once(sb, gb) or (None, [], {})
                 if not A or not B or len(A) < 5 or len(B) < 5:
                     la = len(A or []); lb = len(B or [])
                     print(f"{name}: too few points ({la}, {lb}) — did the "
@@ -248,18 +332,50 @@ class Probe(Node):
                       f"-> {ea[0]} ({ea[1]} m off)   "
                       f"B ended {B[-1][0]:+.1f},{B[-1][1]:+.1f} "
                       f"-> {eb[0]} ({eb[1]} m off)")
-                results.append({"case": name, "rep": rep, "D_shape_m": ds,
-                                "shared_m": sh, "arclen_a": la, "arclen_b": lb,
-                                "end_a": list(A[-1]), "end_b": list(B[-1]),
-                                "nearest_bay_a": ea, "nearest_bay_b": eb,
-                                "track_a": A, "track_b": B,
-                                "say_a": sa, "say_b": sb})
+                case_tag = "same" if name.startswith("SAME") else "different"
+                pair_id = f"{a.run_id}:{case_tag}:r{rep}"
+                row = {"run_id": a.run_id, "pair_id": pair_id,
+                       "rollout_id_a": f"{pair_id}:a",
+                       "rollout_id_b": f"{pair_id}:b",
+                       "start_label": a.start_label,
+                       "reset_pose": [a.x, a.y, a.yaw],
+                       "case": name, "rep": rep, "D_shape_m": ds,
+                       "shared_m": sh, "arclen_a": la, "arclen_b": lb,
+                       "end_a": list(A[-1]), "end_b": list(B[-1]),
+                       "nearest_bay_a": ea, "nearest_bay_b": eb,
+                       "track_a": A, "track_b": B,
+                       "say_a": sa, "say_b": sb,
+                       "status_a": statA, "status_b": statB}
+                if reasA or reasB:
+                    row["reasoning_a"], row["reasoning_b"] = reasA, reasB
+                    row["text_div"] = text_divergence(reasA, reasB)
+                    print(f"{'':28s} reasoning: {len(reasA)}/{len(reasB)} "
+                          f"lines, divergence {row['text_div']:.2f}")
+                results.append(row)
                 print(f"{name:28s} D_shape {ds:6.3f} m   shared {sh:5.1f} m   "
                       f"(drove {la:.1f} / {lb:.1f} m)")
+                print(f"{'':28s} watchdog {statA.get('watchdog_hits', '?')}/"
+                      f"{statB.get('watchdog_hits', '?')}   underrun "
+                      f"{statA.get('underrun_pct', '?')}/"
+                      f"{statB.get('underrun_pct', '?')}%   prefill "
+                      f"{statA.get('prefill_s', 0):.2f}/"
+                      f"{statB.get('prefill_s', 0):.2f}s")
 
         floor = next((r["D_shape_m"] for r in results
                       if r["case"].startswith("SAME")), None)
         diff = [r for r in results if r["case"].startswith("DIFFERENT")]
+        # Text-side mirror of the trajectory methodology: divergence between
+        # the two runs' reasoning streams, judged against the same-sentence
+        # floor. Grounded reasoning should diverge with behaviour; a parrot
+        # reads the same on both sides of the counterfactual.
+        tfloor = next((r["text_div"] for r in results
+                       if r["case"].startswith("SAME") and "text_div" in r),
+                      None)
+        tdiff = [r["text_div"] for r in diff if "text_div" in r]
+        if tfloor is not None and tdiff:
+            print(f"\nreasoning text: floor {tfloor:.2f}   "
+                  f"different {max(tdiff):.2f} "
+                  f"({max(tdiff) / max(tfloor, 1e-6):.1f}x the floor)")
         print(f"\nreference:  oracle {ORACLE_D_SHAPE:.3f} m   "
               f"old stack {OLD_STACK_D_SHAPE:.3f} m")
         if floor is not None and diff:
@@ -284,11 +400,21 @@ def main():
                    default="Park in the second bay on the right, slowly.")
     p.add_argument("--say-b",
                    default="Park in the fourth bay on the right, slowly.")
+    p.add_argument("--goal-a", default="",
+                   help="zone name (or 'x,y') published on /vla_goal for run A; "
+                        "only goal-conditioned bridges listen")
+    p.add_argument("--goal-b", default="")
+    p.add_argument("--case-label", default="DIFFERENT instruction")
+    p.add_argument("--run-id", default="",
+                   help="globally unique identifier copied into every row")
+    p.add_argument("--start-label", default="",
+                   help="human-readable reset condition, e.g. inner/outer")
     p.add_argument("--x", type=float, default=DEFAULT_START[0])
     p.add_argument("--y", type=float, default=DEFAULT_START[1])
     p.add_argument("--yaw", type=float, default=DEFAULT_START[2])
     p.add_argument("--duration", type=float, default=45.0)
     p.add_argument("--settle-s", type=float, default=2.0)
+    p.add_argument("--prefill-timeout-s", type=float, default=8.0)
     p.add_argument("--repeats", type=int, default=1)
     p.add_argument("--tf-topic", default="/world/default/dynamic_pose/info")
     p.add_argument("--out", default="policy_cf_report.json")

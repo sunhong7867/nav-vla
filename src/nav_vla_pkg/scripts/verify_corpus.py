@@ -45,10 +45,13 @@ MIN_RATIO = 5.0         # a pair must beat the floor by this much to count
 SHARED_TOL_M = 0.30     # two runs count as "together" within this distance
 TARGET_HZ = 30.0
 HZ_TOL = 0.15           # +-15% on the frame rate
-# The sim clock ticks at 1 kHz, so two messages inside one tick share a stamp.
-# Measured on a healthy session: 1.0% of tf rows, 0.3% of control. A stopped
-# clock gives ~100%, which is what this actually has to catch.
-DUP_TOL = 0.20
+# The check exists to catch a STOPPED clock (~100% duplicates). The 0.20
+# bar was set when /clock was raw (943 Hz-ish, dup ~1%); since the 100 Hz
+# clock_throttle_node (2026-08-28), a 58 Hz tf stream lands on a 100-tick
+# grid and legitimately shares stamps ~40-55% of the time (measured on the
+# v9 pilot, 2026-09-04 — every episode "failed" at 22-58%). 0.70 still
+# catches the stopped-clock case with a wide margin.
+DUP_TOL = 0.70
 
 
 def load_jsonl(path, limit=None):
@@ -164,11 +167,20 @@ def pair_axis(sa, sb):
     """
     diff = [k for k in ("goal", "lane", "speed_level")
             if sa.get(k) != sb.get(k)]
+    # v9: the obstacle axis varies the WORLD, not the sentence slots — the
+    # whole point is that goal/lane/speed stay identical while the parked
+    # car moves. Compare the obstacle spec (minus coordinates) instead.
+    oa = sa.get("obstacle") or {}
+    ob = sb.get("obstacle") or {}
+    if (oa.get("present"), oa.get("lane")) != (ob.get("present"),
+                                               ob.get("lane")):
+        diff.append("obstacle")
     if not diff:
         return "none"
     if len(diff) > 1:
         return "mixed"
-    return {"goal": "ordinal", "lane": "lane", "speed_level": "speed"}[diff[0]]
+    return {"goal": "ordinal", "lane": "lane", "speed_level": "speed",
+            "obstacle": "obstacle"}[diff[0]]
 
 
 def slot_label(s):
@@ -265,8 +277,13 @@ def check_episode(ep_dir):
     if meta.get("dropped_frames"):
         fail.append(f"{name}: {meta['dropped_frames']} dropped frames")
     if meta.get("valid") is False:
-        fail.append(f"{name}: recorder marked invalid — "
-                    f"{meta.get('invalid_reason', 'no reason given')}")
+        # The recorder flagging its own episode is the pipeline WORKING, not
+        # a session-integrity failure: the episode is already excluded from
+        # `good` (and from packing) by its valid=False. Failing the whole
+        # session for it blocked the v9 pilot (12/97 tf-gap episodes,
+        # 2026-09-04) even though 85 clean episodes were sitting there.
+        note.append(f"{name}: dropped — recorder marked invalid "
+                    f"({meta.get('invalid_reason', 'no reason given')})")
 
     hz = len(frames) / dur if dur > 0 else 0.0
 
@@ -451,7 +468,9 @@ def main():
             by_axis[r["axis"]].append(r)
         # A "floor" group declares that nothing varies, which shows up in the
         # slots as "none".
-        expected = {"floor": "none"}
+        # A "zone" group (direct-to-zone, v8) varies the goal slot, which the
+        # slot classifier reports under its historical name "ordinal".
+        expected = {"floor": "none", "zone": "ordinal"}
         mismatch = [r for r in pairs if r["declared_axis"] and r["axis"] !=
                     expected.get(r["declared_axis"], r["declared_axis"])]
         print(f"  {len(pairs)} pairs from {len(groups)} groups")

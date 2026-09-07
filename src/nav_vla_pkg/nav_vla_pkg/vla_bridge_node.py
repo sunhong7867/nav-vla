@@ -38,9 +38,10 @@ denominator of the whole evaluation.
 
 Rules in the control path
 -------------------------
-Exactly one, and it is instrumented: if no chunk arrives for `watchdog_ms` or the
-queue underruns, command `speed=0, steering=hold`. Every activation is counted and
-published. **A valid eval run is watchdog activations == 0 and underrun < 1%**;
+Exactly one, and it is instrumented: if the queue underruns or the newest chunk
+is older than its configured horizon, command zero linear and angular velocity.
+Every activation is counted and published. **A valid eval run is watchdog
+activations == 0 and underrun < 1%**;
 both numbers are reported with every result. Stopping at a goal is *not* a rule
 here — it has to be learned behaviour, present in the demonstrations as a
 deceleration ramp.
@@ -48,6 +49,7 @@ deceleration ramp.
 
 import json
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -168,6 +170,29 @@ class VlaBridge(Node):
         self.image_topic = self.declare_parameter(
             "image_topic", "/vla_camera/image_raw").value
         self.odom_topic = self.declare_parameter("odom_topic", "/odom").value
+        # v6 was trained with a constant-zero third state channel.  Keep the
+        # historical odometry proxy available for other checkpoints, but make
+        # the training/serving contract explicit for controlled evaluation.
+        self.force_zero_steer_state = bool(self.declare_parameter(
+            "force_zero_steer_state", False).value)
+        # Goal conditioning (v8g+ checkpoints, observation.state dim 5).
+        # The two extra state dims are [bearing_to_goal_rad, dist_to_goal_m]
+        # in the MOTION-heading frame (raw gz yaw + yaw_to_heading_deg), the
+        # exact numbers to_lerobot.py --goal-zones wrote at training time.
+        # A 3-dim checkpoint served with this ON (or a 5-dim one with it OFF)
+        # fails at the policy's normalizer — loudly, which is the point.
+        self.goal_conditioning = bool(self.declare_parameter(
+            "goal_conditioning", False).value)
+        self.goal_zones_file = self.declare_parameter(
+            "goal_zones_file", os.path.expanduser(
+                "~/ROS2_project/nav-vla/src/nav_vla_pkg/config/"
+                "track_paths.json")).value
+        self.goal_topic = self.declare_parameter(
+            "goal_topic", "/vla_goal").value
+        self.yaw_to_heading = math.radians(float(self.declare_parameter(
+            "yaw_to_heading_deg", -90.0).value))
+        self.model_name = self.declare_parameter(
+            "model_name", "prius_hybrid").value
         self.rate_hz = float(self.declare_parameter("rate_hz", 10.0).value)
         self.chunk_len = int(self.declare_parameter("chunk_len", 30).value)
         # Chunk commitment is not a tuning nicety — it decides whether the policy
@@ -204,6 +229,14 @@ class VlaBridge(Node):
             self.declare_parameter("curv_boost_lo", 0.05).value)
         self.curv_boost_hi = float(
             self.declare_parameter("curv_boost_hi", 0.10).value)
+        # Gain SCHEDULE low end (default 1.0 = legacy single-gain ramp).
+        # gain(k) = curv_gain_lo below curv_boost_lo, ramping linearly to
+        # curv_boost at curv_boost_hi. curv_gain_lo<1 with curv_boost>1
+        # softens gentle curves while sharpening tight ones — the measured
+        # small-car failure mode was exactly this split (gentle OK at 0.95,
+        # tight S understeers).
+        self.curv_gain_lo = float(
+            self.declare_parameter("curv_gain_lo", 1.0).value)
         # Path-tracking mode (default "replay" = execute actions step by step).
         # "pursuit": integrate the REMAINING queue into an ego-frame path each
         # tick and steer at a speed-scaled lookahead point on it (pure
@@ -218,6 +251,17 @@ class VlaBridge(Node):
             self.declare_parameter("pursuit_lookahead_gain", 0.5).value)
         self.pursuit_max_lookahead = float(
             self.declare_parameter("pursuit_max_lookahead", 3.0).value)
+        # Dual-window preview (default ON). Single-window mean curvature
+        # systematically DILUTES sharp corners (the lookahead window mixes
+        # the corner with the straights around it), so no single gain fits
+        # both gentle and tight curves. The near window (preview_near_arc)
+        # is short enough to read the corner's true curvature; the far
+        # window keeps the early turn-in/unwind. Selection: opposite signs
+        # -> near wins (imminent geometry); same sign -> larger magnitude.
+        self.preview_dual = bool(
+            self.declare_parameter("preview_dual", True).value)
+        self.preview_near_arc = float(
+            self.declare_parameter("preview_near_arc", 0.9).value)
         # Lateral-acceleration speed cap (default OFF). With a commanded
         # curvature k, cap v so that v^2 * |k| <= curv_slow_alat — the car
         # slows for corners in proportion to how sharp the commanded arc is,
@@ -234,6 +278,33 @@ class VlaBridge(Node):
         # the plan.
         self.curv_brake_decel = float(
             self.declare_parameter("curv_brake_decel", 0.8).value)
+
+        # Persist the parameters that materially define a rollout.  The probe
+        # mirrors this object into every result row via /vla/status, preventing
+        # a launch-script default from being mistaken for an applied setting.
+        self.execution_contract = {
+            "state_steer_source": (
+                "zero" if self.force_zero_steer_state else "odom_proxy"),
+            "goal_conditioning": self.goal_conditioning,
+            "rate_hz": self.rate_hz,
+            "chunk_len": self.chunk_len,
+            "refill_at": self.refill_at,
+            "splice_overlap": self.splice_overlap,
+            "seed": self.seed,
+            "max_speed": self.max_speed,
+            "speed_scale": self.speed_scale,
+            "speed_slew": self.speed_slew,
+            "track_mode": self.track_mode,
+            "curv_gain_lo": self.curv_gain_lo,
+            "curv_boost": self.curv_boost,
+            "curv_slow_alat": self.curv_slow_alat,
+            "curv_brake_decel": self.curv_brake_decel,
+            "max_curvature_1pm": MAX_CURVATURE,
+            "sim_wheel_base_m": SIM_WHEEL_BASE,
+            "sim_max_steer_rad": SIM_MAX_STEER,
+            "image_topic": self.image_topic,
+            "odom_topic": self.odom_topic,
+        }
 
         self.bridge = CvBridge()
         self.obs = LatestObservation()
@@ -284,6 +355,28 @@ class VlaBridge(Node):
         self.create_subscription(String, "/vla/instruction", self._instr_cb,
                                  instr_qos_volatile, callback_group=instr_cg)
 
+        self._goal_lock = threading.Lock()
+        self._goal_xy = None      # (x, y) world, or None = no goal
+        self._goal_label = ""
+        self._pose_stream = None
+        if self.goal_conditioning:
+            from nav_vla_pkg.gz_pose import WorldPoseStream, resolve_gz_bin
+            self._zones = {name: tuple(z["pose"][:2]) for name, z in
+                           json.load(open(self.goal_zones_file,
+                                          encoding="utf-8"))["zones"].items()}
+            self._pose_stream = WorldPoseStream(
+                resolve_gz_bin(), self.model_name).start()
+            # Same dual-QoS pattern as /vla/instruction: accept both durable
+            # and volatile publishers.
+            self.create_subscription(String, self.goal_topic, self._goal_cb,
+                                     instr_qos, callback_group=instr_cg)
+            self.create_subscription(String, self.goal_topic, self._goal_cb,
+                                     instr_qos_volatile,
+                                     callback_group=instr_cg)
+            self.get_logger().info(
+                f"goal conditioning ON: {len(self._zones)} zones, "
+                f"goal topic {self.goal_topic}, model {self.model_name}")
+
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.stat_pub = self.create_publisher(String, "/vla/status", 10)
         # Telemetry only. Every chunk that gets spliced is mirrored here as raw
@@ -291,6 +384,10 @@ class VlaBridge(Node):
         # path subscribes to it or branches on it — the rule-free contract in
         # the module docstring is untouched.
         self.plan_pub = self.create_publisher(String, "/vla/plan", 5)
+        # Model-generated explanation text (reasoning_vla checkpoints served
+        # with --reasoning-every). Empty topic when the server sends none.
+        self.reasoning_pub = self.create_publisher(String, "/vla/reasoning", 5)
+        self._last_reasoning_req = -1
 
         self.create_timer(1.0 / self.rate_hz, self._control,
                           callback_group=control_cg)
@@ -303,6 +400,9 @@ class VlaBridge(Node):
             f"vla_bridge -> {self.endpoint}, image={self.image_topic}, "
             f"{self.rate_hz:.0f} Hz, chunk={self.chunk_len}, "
             f"splice overlap={self.splice_overlap}")
+        self.get_logger().info(
+            "execution contract: "
+            + json.dumps(self.execution_contract, sort_keys=True))
 
     # ---------------------------------------------------------------- sensors
 
@@ -323,8 +423,56 @@ class VlaBridge(Node):
         w = msg.twist.twist.angular.z
         # Steering angle back-solved from the bicycle model, matching the
         # `state` vector the corpus was resampled with.
-        steer = math.atan2(w * SIM_WHEEL_BASE, v) if abs(v) > 1e-3 else 0.0
+        steer_proxy = (
+            math.atan2(w * SIM_WHEEL_BASE, v) if abs(v) > 1e-3 else 0.0)
+        steer = 0.0 if self.force_zero_steer_state else steer_proxy
         self.obs.put_state(v, w, steer)
+
+    def _goal_cb(self, msg):
+        """Set or clear the navigation goal for goal-conditioned checkpoints.
+
+        Accepts a zone name from the zones table, "x,y" world coordinates, or
+        ""/"none" to clear. The goal only fills two state dims — the sentence
+        still decides the behaviour; this is geometry, not intent.
+        """
+        raw = msg.data.strip()
+        goal, label = None, ""
+        if raw and raw.lower() != "none":
+            if raw in self._zones:
+                goal, label = self._zones[raw], raw
+            else:
+                try:
+                    x, y = (float(v) for v in raw.split(","))
+                    goal, label = (x, y), raw
+                except ValueError:
+                    self.get_logger().warn(f"unknown goal '{raw}' — ignored")
+                    return
+        with self._goal_lock:
+            changed = goal != self._goal_xy
+            self._goal_xy, self._goal_label = goal, label
+        if changed:
+            self.get_logger().info(f"goal -> {label or 'none'} {goal or ''}")
+
+    def _goal_state_dims(self):
+        """[bearing, dist] for the current goal, or [0, 0] when none is set.
+
+        Matches to_lerobot.py --goal-zones: bearing is atan2 to the goal minus
+        the MOTION heading (raw gz yaw + yaw_to_heading_deg), wrapped to +-pi.
+        A set goal with no pose fix yet returns None so the caller can skip
+        the inference rather than feed a false (0, 0) "no goal" state.
+        """
+        with self._goal_lock:
+            goal = self._goal_xy
+        if goal is None:
+            return [0.0, 0.0]
+        pose = self._pose_stream.latest if self._pose_stream else None
+        if pose is None:
+            return None
+        x, y, yaw = pose
+        dx, dy = goal[0] - x, goal[1] - y
+        b = math.atan2(dy, dx) - (yaw + self.yaw_to_heading)
+        b = (b + math.pi) % (2 * math.pi) - math.pi
+        return [b, math.hypot(dx, dy)]
 
     def _instr_cb(self, msg):
         text = msg.data.strip()
@@ -427,11 +575,17 @@ class VlaBridge(Node):
                 k_raw = k_preview
         if k_raw is not None:
             k = k_raw
-            if self.curv_boost > 1.0:
+            # Curvature-scheduled gain: curv_gain_lo below the lo threshold,
+            # linear ramp to curv_boost at the hi threshold. Legacy behavior
+            # (gain_lo=1.0, boost>1) and flat attenuation (gain_lo=boost<1)
+            # are both special cases.
+            if (abs(self.curv_boost - 1.0) > 1e-6
+                    or abs(self.curv_gain_lo - 1.0) > 1e-6):
                 span = max(1e-6, self.curv_boost_hi - self.curv_boost_lo)
                 t = min(1.0, max(0.0, (abs(k) - self.curv_boost_lo) / span))
-                if t > 0.0:
-                    k *= 1.0 + (self.curv_boost - 1.0) * t
+                gain = self.curv_gain_lo + (self.curv_boost - self.curv_gain_lo) * t
+                if abs(gain - 1.0) > 1e-6:
+                    k *= gain
                     override = "curv_boost"
             if abs(k) > MAX_CURVATURE:
                 k = math.copysign(MAX_CURVATURE, k)
@@ -502,14 +656,23 @@ class VlaBridge(Node):
                         + self.pursuit_lookahead_gain * speed)
         arc = 0.0
         yaw_sum = 0.0
+        near_arc = near_yaw = None
         for dx, dy, dyaw in path:
             arc += math.hypot(dx, dy)
             yaw_sum += dyaw
+            if near_arc is None and arc >= self.preview_near_arc:
+                near_arc, near_yaw = arc, yaw_sum
             if arc >= lookahead:
                 break
         if arc < 0.5 * self.pursuit_base_lookahead:
             return None
-        return yaw_sum / arc
+        k_far = yaw_sum / arc
+        if not self.preview_dual or near_arc is None or near_arc <= 0.0:
+            return k_far
+        k_near = near_yaw / near_arc
+        if k_near * k_far < 0.0:
+            return k_near
+        return k_near if abs(k_near) > abs(k_far) else k_far
 
     def _pursuit_curvature(self, popped, speed):
         """Curvature toward a lookahead point on the predicted path.
@@ -593,7 +756,10 @@ class VlaBridge(Node):
         sock = connect()
         while self._running:
             if len(self.queue) >= self.refill_at * self.chunk_len:
-                time.sleep(0.005)
+                # 20 ms poll, not 5: the 5 ms spin measured as a full core of
+                # steady CPU on the demo laptop, and the queue drains at 10 Hz
+                # so even 20 ms leaves a 5x margin on the refill reaction.
+                time.sleep(0.02)
                 continue
             snap = self.obs.snapshot()
             with self._task_lock:
@@ -602,6 +768,12 @@ class VlaBridge(Node):
                 time.sleep(0.05)
                 continue
             jpeg, state, stamp, seq = snap
+            if self.goal_conditioning:
+                gdims = self._goal_state_dims()
+                if gdims is None:      # goal set but no pose fix yet
+                    time.sleep(0.05)
+                    continue
+                state = state + gdims
             # `tick` is the absolute count of actions already executed. A
             # deterministic server (replay, or any stub generating a continuous
             # signal) needs it to phase-lock: without it the server can only
@@ -626,6 +798,11 @@ class VlaBridge(Node):
                 time.sleep(0.2)
                 continue
             self.latencies.append((time.monotonic() - t0) * 1000.0)
+            r_req = rep.get("reasoning_req", -1)
+            if rep.get("reasoning") and r_req != self._last_reasoning_req:
+                self._last_reasoning_req = r_req
+                self.reasoning_pub.publish(String(data=json.dumps(
+                    {"text": rep["reasoning"], "req": r_req})))
             actions = rep.get("actions")
             if not actions:
                 time.sleep(0.05)
@@ -650,6 +827,7 @@ class VlaBridge(Node):
             "underrun_pct": round(100.0 * self.queue.underruns / total, 2),
             "watchdog_hits": self.watchdog_hits,
             "task": self.task,
+            "contract": self.execution_contract,
         }
         self.stat_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
         self.get_logger().info(
@@ -673,10 +851,14 @@ class VlaBridge(Node):
 def main():
     rclpy.init()
     node = VlaBridge()
-    ex = MultiThreadedExecutor(num_threads=4)
-    ex.add_node(node)
+    # Single-threaded spin, deliberately: rclpy's MultiThreadedExecutor
+    # busy-waits and burned a full core with the bridge IDLE (measured ~99%
+    # sustained, 2026-08-28 — a leg of the desktop-freeze incident). Every
+    # callback here is sub-millisecond (JPEG encode: 1.0 ms measured) and
+    # inference already runs on its own plain thread, so nothing needs the
+    # parallelism.
     try:
-        ex.spin()
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:

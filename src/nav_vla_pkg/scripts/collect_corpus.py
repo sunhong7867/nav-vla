@@ -78,7 +78,7 @@ from std_msgs.msg import Int32, String  # noqa: E402
 from tf2_msgs.msg import TFMessage  # noqa: E402
 
 from nav_vla_pkg.gz_pose import query_world_pose, resolve_gz_bin  # noqa: E402
-from nav_vla_pkg.gz_reset import SimResetter  # noqa: E402
+from nav_vla_pkg.gz_reset import SimResetter, set_model_pose  # noqa: E402
 from nav_vla_pkg.speed_control import raw_speed_to_mps  # noqa: E402
 
 CFG = os.path.join(PKG_PARENT, "config")
@@ -87,6 +87,40 @@ BANK_FILE = os.path.join(CFG, "instructions.json")
 
 # route_oracle_node.py: heading = model_yaw + YAW_OFFSET, measured -90.00 deg.
 YAW_OFFSET = -math.pi / 2
+
+# --- v9 obstacle-contrast axis ------------------------------------------
+# ONE persistent obstacle entity, moved by set_pose teleports — the same
+# battle-tested path the ego reset uses. The first full-collection attempt
+# (2026-09-05 01:21) did spawn/despawn per variant instead; ~22 create/
+# remove cycles wedged gz's create service mid-run (a `ros2 run ros_gz_sim
+# create` child hung for 2 h and the world stopped serving topics). The
+# entity is pre-spawned once by the collection script; v0 episodes park it
+# at OB_PARK_XY, far outside the camera's world.
+WS_ROOT = os.path.dirname(os.path.dirname(PKG_PARENT))
+OB_REGISTRY = os.path.join(WS_ROOT, "eval_out", "demo", "obstacles.json")
+OB_ENTITY = "v9_ob1"
+OB_MODELS = ["hatchback_green", "hatchback_red", "hatchback_blue",
+             "hatchback_yellow"]
+OB_Z = 0.01265
+# One parking spot per colour: all four hatchbacks are pre-spawned and the
+# inactive ones sit here, far outside the camera's world (track is ~±25 m).
+OB_PARK = {m: (60.0 + 8.0 * i, 60.0) for i, m in enumerate(OB_MODELS)}
+# Watch-then-avoid (user decision 2026-09-07): the demo car cannot know the
+# car ahead is parked — it can only observe. So the demonstration is:
+# decelerate to a stop short of it, hold OB_WAIT_S while "watching", then
+# treat it as parked and change lanes. The stop is a cruise goal with
+# target_speed 0 (oracle slews at accel_limit 0.55 m/s^2 — a smooth brake),
+# never {"goal":"stop"} which zeroes /cmd_vel instantly.
+# Standstill gap is CENTER-to-center along the lane. The two bodies eat
+# ~4.6 m of it (prius half-length 2.4 + hatchback half 2.2), so 8.0 leaves
+# ~3.4 m of visible bumper gap. The first run used 3.0 and the "stop"
+# ended 1.6 m INSIDE the parked car (watched live, 2026-09-07).
+OB_STOP_MARGIN_M = 8.0
+OB_BODY_EXTENT_M = 4.6      # combined half-lengths, for labels/collision
+OB_WAIT_S = 2.5             # observation hold before committing to the pass
+OB_STOP_TIMEOUT_S = 12.0    # standstill never reached -> go anyway
+OB_ACCEL = 0.55             # oracle accel_limit, for the braking distance
+OB_RETURN_BEHIND_M = 6.0    # obstacle this far behind -> return to lane
 
 # Ring waypoints that are far enough apart to be distinct goals. T3 (index 124)
 # and crosswalk_stop (125) are the same point on the loop, as are Start (325) and
@@ -437,6 +471,154 @@ def build_plan(args, paths, bank, rng):
                        "kind": "cruise", "cf_axis": "lane", "start": sp,
                        "variants": variants})
 
+    # --- obstacle contrast: the visual-grounding axis (v9) ---------------
+    #
+    # One start, one cruise sentence, three worlds: empty lane / a parked
+    # car in OUR lane (the oracle performs a scripted lane-change around
+    # it) / the same car in the OTHER lane (hold lane). The sentence never
+    # mentions the car — the lane change is a *reaction*, so it belongs in
+    # the reasoning label, and the v0/v1/v2 contrast makes the camera the
+    # only way to tell the three narrations apart.
+    ob_sps = lane_starts(
+        paths, getattr(args, "obstacle_groups", 0), rng,
+        args.lat_jitter, args.yaw_jitter)
+    spacing = paths["meta"]["spacing_m"]
+    for gi, sp in enumerate(ob_sps):
+        lane = sp["lane"]
+        other = "lane2" if lane == "lane1" else "lane1"
+        level = speeds[gi % len(speeds)]
+        n_pts = len(paths[lane])
+        gap_m = rng.uniform(20.0, 30.0)
+        ob_idx = (sp["lane_index"] + int(gap_m / spacing)) % n_pts
+        # long enough to reach the car, pass it, and settle back
+        dur = round(gap_m / bank.speed_map[level] + 14.0, 1)
+        model = OB_MODELS[gi % len(OB_MODELS)]
+        slots = {"lane": lane, "speed": level}
+        text, tpl, fill = bank.render("cruise", slots)
+        variants = []
+        for vi, ob_lane in enumerate([None, lane, other]):
+            if ob_lane is None:
+                ob = {"present": False}
+            else:
+                ox, oy = paths[ob_lane][ob_idx]
+                nx2, ny2 = paths[ob_lane][(ob_idx + 1) % n_pts]
+                ob = {"present": True, "entity": f"v9_{model}",
+                      "model": model,
+                      "lane": ob_lane, "index": ob_idx,
+                      "x": ox, "y": oy,
+                      "yaw": math.atan2(ny2 - oy, nx2 - ox),
+                      "in_our_lane": ob_lane == lane}
+            # v1 spends extra window braking, watching (OB_WAIT_S) and
+            # re-accelerating; without it the pass gets clipped mid-swerve
+            vdur = dur + (14.0 if ob.get("in_our_lane") else 0.0)
+            variants.append({
+                "cf_variant_id": f"v{vi}",
+                "intent_id": "cruise",
+                "instruction": text,
+                "template": tpl,
+                "intent_slots": {"lane": lane,
+                                 "speed_level": level,
+                                 "target_speed": bank.speed_map[level],
+                                 "target_speed_raw": bank.speed_map_raw[level],
+                                 "cruise_s": vdur,
+                                 "words": fill,
+                                 "obstacle": ob},
+                "oracle_goal": {"goal": "cruise", "lane": lane,
+                                "target_speed": bank.speed_map[level]},
+                "cruise_s": vdur,
+                "timeout_s": vdur + 15.0,
+                "obstacle_spec": ob,
+                # scripted avoidance only when the car blocks OUR lane
+                "avoid_lane": other if ob.get("in_our_lane") else None,
+            })
+        groups.append({"cf_group_id": f"{args.group_prefix}o{gi:04d}",
+                       "kind": "obstacle", "cf_axis": "obstacle", "start": sp,
+                       "variants": variants})
+
+    # --- direct-to-zone: the shortest-path axis -------------------------
+    #
+    # Straight-line navigation to a ring zone via the navigator's direct
+    # mode (ignores lanes, crosses the infield). Two different zones from
+    # the SAME start pose form the counterfactual pair. No speed slot —
+    # direct mode drives its own speed profile, so a speed word in the
+    # sentence would be an unteachable lie.
+    zone_xy = {name: (z["pose"][0], z["pose"][1])
+               for name, z in paths["zones"].items()
+               if isinstance(z, dict) and "pose" in z}
+    direct_zone_names = [z for z in ("T2", "M2", "M3", "T3", "T4", "Start")
+                         if z in zone_xy]
+    direct_sps = lane_starts(
+        paths, getattr(args, "direct_groups", 0), rng,
+        args.lat_jitter, args.yaw_jitter, windows=None)
+    for gi, sp in enumerate(direct_sps):
+        # Two zones, both a meaningful drive away (8-30 m straight line).
+        cands = [z for z in direct_zone_names
+                 if 8.0 <= math.hypot(zone_xy[z][0] - sp["x"],
+                                      zone_xy[z][1] - sp["y"]) <= 30.0]
+        if len(cands) < 2:
+            continue
+        picks = rng.sample(cands, 2)
+        variants = []
+        for vi, zone in enumerate(picks):
+            text, tpl, fill = bank.render("direct_zone", {"zone": zone})
+            dist = math.hypot(zone_xy[zone][0] - sp["x"],
+                              zone_xy[zone][1] - sp["y"])
+            variants.append({
+                "cf_variant_id": f"v{vi}",
+                "intent_id": "direct_zone",
+                "instruction": text,
+                "template": tpl,
+                "intent_slots": {"goal": zone, "mode": "direct",
+                                 "words": fill},
+                "oracle_goal": {"goal": zone, "mode": "direct"},
+                "timeout_s": round(dist / 0.8 * args.timeout_slack + 20.0, 1),
+            })
+        groups.append({"cf_group_id": f"{args.group_prefix}d{gi:04d}",
+                       "kind": "direct_zone", "cf_axis": "zone", "start": sp,
+                       "variants": variants})
+
+    # --- clockwise cruise: the direction axis ---------------------------
+    #
+    # The teacher's lane follower is vision-based and direction-agnostic: it
+    # follows the lane in whatever direction the car is heading. Reversing
+    # the start yaw by pi therefore yields clockwise demonstrations with no
+    # driver change. Sentences come from cruise_cw, whose lane words are
+    # geometric-only (inner/outer) — "the left lane" flips meaning in CW.
+    cw_sps = lane_starts(
+        paths, getattr(args, "cw_cruise_groups", 0), rng,
+        args.lat_jitter, args.yaw_jitter, windows=cruise_windows)
+    for gi, sp in enumerate(cw_sps):
+        sp = dict(sp)
+        sp["model_yaw"] = wrap_pi(sp["model_yaw"] + math.pi)
+        sp["direction"] = "cw"
+        level = speeds[gi % len(speeds)]
+        dur = [18.0, 24.0, 30.0][(gi // len(speeds)) % 3]
+        cw_lanes = (["lane1", "lane2"] if args.cruise_lane == "both"
+                    else [args.cruise_lane])
+        variants = []
+        for vi, lane in enumerate(cw_lanes):
+            slots = {"lane_geo": lane, "speed": level, "direction": "cw"}
+            text, tpl, fill = bank.render("cruise_cw", slots)
+            variants.append({
+                "cf_variant_id": f"v{vi}",
+                "intent_id": "cruise_cw",
+                "instruction": text,
+                "template": tpl,
+                "intent_slots": {"lane": lane, "direction": "cw",
+                                 "speed_level": level,
+                                 "target_speed": bank.speed_map[level],
+                                 "target_speed_raw": bank.speed_map_raw[level],
+                                 "cruise_s": dur,
+                                 "words": fill},
+                "oracle_goal": {"goal": "cruise", "lane": lane,
+                                "target_speed": bank.speed_map[level]},
+                "cruise_s": dur,
+                "timeout_s": dur + 15.0,
+            })
+        groups.append({"cf_group_id": f"{args.group_prefix}w{gi:04d}",
+                       "kind": "cruise_cw", "cf_axis": "lane", "start": sp,
+                       "variants": variants})
+
     if skipped_ring:
         print(f"note: dropped {skipped_ring} ring group(s) — no waypoint "
               f"{RING_GAP_MIN_M:.0f}-{RING_GAP_MAX_M:.0f} m ahead of the start")
@@ -448,10 +630,18 @@ def build_plan(args, paths, bank, rng):
 
 class Collector(Node):
 
-    def __init__(self, args, plan, ring_pts=None):
+    def __init__(self, args, plan, ring_pts=None, lane_paths=None,
+                 lane_spacing=0.35):
         super().__init__("corpus_collector")
         self.args = args
         self.plan = plan
+        # v9 obstacle axis: lane polylines for the ego-to-obstacle arc gap
+        # (Euclidean is wrong on this ring — a car on the opposite straight
+        # reads "12 m ahead" across the infield) and the currently spawned
+        # obstacle spec (None = clear world).
+        self.lane_paths = lane_paths or {}
+        self.lane_spacing = float(lane_spacing)
+        self._ob_current = None
         # Coarse ring polyline for the off-ring guard. The teacher's lane
         # follower can latch onto the parking OUT-road at the junction during
         # goal-less cruises and drive off the ring; duration-terminated
@@ -481,6 +671,8 @@ class Collector(Node):
         self.motion_pub = self.create_publisher(
             String, "/motion_control_command", cmd_qos)
         self.zone_goal_pub = self.create_publisher(String, "/nav_goal", 10)
+        self.direct_goal_pub = self.create_publisher(
+            String, "/direct_nav_goal", 10)
 
         self.create_subscription(String, "/nav_status", self._nav_cb, 20)
         self.create_subscription(String, "/recorder/status", self._rec_cb, 20)
@@ -532,6 +724,7 @@ class Collector(Node):
             # clamp speed — cruise episodes have no goal, so the latter two
             # are what actually stop them.
             self.zone_goal_pub.publish(String(data="stop"))
+            self.direct_goal_pub.publish(String(data="stop"))
             self.motion_pub.publish(String(data="stop"))
             self.speed_pub.publish(Int32(data=0))
         else:
@@ -564,6 +757,57 @@ class Collector(Node):
                 return st
         return None
 
+    # ------------------------------------------------- v9 obstacle helpers
+
+    def _set_obstacle(self, spec):
+        """Teleport the pre-spawned obstacle fleet to match `spec`.
+
+        `spec` is None / {present: False} for a clear track, else the
+        variant's obstacle dict. All four hatchbacks exist for the whole
+        run (spawned by collect_v9_full.sh); the active one is set_pose'd
+        onto the lane and everything else to its parking spot. No gz
+        create/remove ever happens mid-run — that wedged the world once.
+        Returns True when the world matches the request.
+        """
+        want = spec if (spec and spec.get("present")) else None
+        if want == self._ob_current:
+            return True
+        ok_all = True
+        for model in OB_MODELS:
+            entity = f"v9_{model}"
+            if want and want.get("entity") == entity:
+                tx, ty, tyaw = want["x"], want["y"], want["yaw"]
+            else:
+                (tx, ty), tyaw = OB_PARK[model], 0.0
+            ok, msg = set_model_pose(self.gz, entity, tx, ty, tyaw, z=OB_Z)
+            if not ok:
+                self.get_logger().error(
+                    f"obstacle teleport failed ({entity}): {msg}")
+                ok_all = False
+        if ok_all:
+            self._ob_current = want
+        try:
+            os.makedirs(os.path.dirname(OB_REGISTRY), exist_ok=True)
+            with open(OB_REGISTRY, "w") as f:
+                json.dump([{"entity": want["entity"], "model": want["model"],
+                            "x": want["x"], "y": want["y"],
+                            "lane": want["lane"]}] if want else [], f)
+        except OSError as e:
+            self.get_logger().warn(f"obstacle registry write failed: {e}")
+        return ok_all
+
+    def _ob_arc_gap(self, ob):
+        """(forward_m, behind_m) from ego to the obstacle along its lane."""
+        if not self.tf:
+            return None, None
+        pts = self.lane_paths[ob["lane"]]
+        n = len(pts)
+        ex, ey = self.tf[0], self.tf[1]
+        ei = min(range(n), key=lambda j: (pts[j][0] - ex) ** 2
+                 + (pts[j][1] - ey) ** 2)
+        fwd = ((ob["index"] - ei) % n) * self.lane_spacing
+        return fwd, n * self.lane_spacing - fwd
+
     def run_episode(self, group, variant):
         sp = group["start"]
         row = {
@@ -578,6 +822,12 @@ class Collector(Node):
 
         self._halt_driver()
         self._spin(0.3)
+        if "obstacle_spec" in variant or self._ob_current:
+            if not self._set_obstacle(variant.get("obstacle_spec")):
+                row["termination"] = "obstacle_failed"
+                row["episode"] = None
+                return row
+            self._spin(0.5)
 
         # Reset, with retries. A group whose variants started from different
         # poses yields no valid pair, so a bad reset is worth spending time on.
@@ -632,15 +882,26 @@ class Collector(Node):
              "data": {"oracle_goal": variant["oracle_goal"]}})))
         if self.args.driver == "yolo":
             og = variant["oracle_goal"]
-            self.speed_pub.publish(Int32(
-                data=int(variant["intent_slots"]["target_speed_raw"])))
-            if variant.get("cruise_s") is not None:
+            if og.get("mode") == "direct":
+                # Navigator direct mode: straight line to the zone, own
+                # speed profile. /speed_command is a GLOBAL cap in the
+                # motion planner that clamps even the direct override, and
+                # _halt_driver just set it to 0 — reopen it first (pilot
+                # 2026-08-21: all direct episodes froze at speed 0).
+                self.speed_pub.publish(Int32(data=150))
+                self.direct_goal_pub.publish(String(data=json.dumps(
+                    {"zone": og["goal"]})))
+            elif variant.get("cruise_s") is not None:
+                self.speed_pub.publish(Int32(
+                    data=int(variant["intent_slots"]["target_speed_raw"])))
                 self.lane_pub.publish(String(data=og.get("lane", "lane2")))
                 # No navigator goal in cruise: release the planner's motion
                 # gate ourselves (the navigator's "start" would otherwise
                 # never fire and the car stays parked).
                 self.motion_pub.publish(String(data="start"))
             else:
+                self.speed_pub.publish(Int32(
+                    data=int(variant["intent_slots"]["target_speed_raw"])))
                 self.zone_goal_pub.publish(String(data=json.dumps(
                     {"zone": og["goal"], "lane": og.get("lane", "lane2")})))
         else:
@@ -651,9 +912,70 @@ class Collector(Node):
         t0 = time.monotonic()
         last_xy, last_move = self.tf, t0
         off_ring_since = None
+        # v9 scripted watch-then-avoid (v1 only): brake to a stop short of
+        # the car, hold OB_WAIT_S "watching" it, then pass on the other
+        # lane and return. The oracle never senses obstacles — this loop
+        # is the only thing between the demo car and a collision.
+        avoid_lane = variant.get("avoid_lane")
+        avoid_phase = "approach" if avoid_lane else None
+        ob = variant.get("obstacle_spec") or {}
+        v_tier = float(variant["intent_slots"].get("target_speed") or 1.4)
+        # brake distance at the oracle's slew + the standstill gap
+        stop_at_m = v_tier * v_tier / (2.0 * OB_ACCEL) + OB_STOP_MARGIN_M
+        t_stop_cmd = t_still = None
+        prev_xy = None
         while time.monotonic() - t0 < variant["timeout_s"]:
             rclpy.spin_once(self, timeout_sec=0.02)
-            if self.ring_pts and self.tf and variant["intent_id"] != "park_bay":
+            if ob.get("present") and self.tf and math.hypot(
+                    self.tf[0] - ob["x"], self.tf[1] - ob["y"]) < 2.0:
+                # center distance 2 m = bodies interpenetrating; flag it as
+                # its own termination so it can never pack as "success"
+                termination, detail = "collision", "ego within 2 m of obstacle"
+                break
+            if avoid_phase in ("approach", "stopping", "waiting", "passing"):
+                fwd, behind = self._ob_arc_gap(ob)
+                now = time.monotonic()
+                if avoid_phase == "approach" and fwd is not None \
+                        and 0.0 < fwd <= stop_at_m:
+                    self.goal_pub.publish(String(data=json.dumps(
+                        {**variant["oracle_goal"], "target_speed": 0.0})))
+                    self.rec_pub.publish(String(data=json.dumps(
+                        {"cmd": "event", "kind": "avoid_slow",
+                         "data": {"fwd_m": round(fwd, 2)}})))
+                    avoid_phase, t_stop_cmd = "stopping", now
+                elif avoid_phase == "stopping":
+                    # standstill = <3 cm of motion over a 0.4 s window (a
+                    # per-spin delta would read 1 m/s as "still")
+                    if prev_xy is None or now - prev_xy[2] >= 0.4:
+                        if prev_xy is not None and self.tf and math.hypot(
+                                self.tf[0] - prev_xy[0],
+                                self.tf[1] - prev_xy[1]) < 0.03:
+                            avoid_phase, t_still = "waiting", now
+                        if self.tf:
+                            prev_xy = (self.tf[0], self.tf[1], now)
+                    if avoid_phase == "stopping" and \
+                            now - t_stop_cmd > OB_STOP_TIMEOUT_S:
+                        avoid_phase, t_still = "waiting", now - OB_WAIT_S
+                elif avoid_phase == "waiting" and now - t_still >= OB_WAIT_S:
+                    self.goal_pub.publish(String(data=json.dumps(
+                        {**variant["oracle_goal"], "lane": avoid_lane})))
+                    self.rec_pub.publish(String(data=json.dumps(
+                        {"cmd": "event", "kind": "avoid_go",
+                         "data": {"waited_s": round(now - t_still, 2),
+                                  "to_lane": avoid_lane}})))
+                    avoid_phase = "passing"
+                elif avoid_phase == "passing" and behind is not None \
+                        and OB_RETURN_BEHIND_M <= behind < 40.0:
+                    self.goal_pub.publish(String(
+                        data=json.dumps(variant["oracle_goal"])))
+                    self.rec_pub.publish(String(data=json.dumps(
+                        {"cmd": "event", "kind": "avoid_return",
+                         "data": {"behind_m": round(behind, 2)}})))
+                    avoid_phase = "returned"
+            # Off-ring guard exemptions: parking leaves the ring by design,
+            # and direct_zone cuts across the infield by definition.
+            if (self.ring_pts and self.tf
+                    and variant["intent_id"] not in ("park_bay", "direct_zone")):
                 x, y = self.tf[0], self.tf[1]
                 d_ring = min(math.hypot(px - x, py - y)
                              for px, py in self.ring_pts)
@@ -714,6 +1036,13 @@ class Collector(Node):
         st = self._await_recorder("idle", timeout=40.0, needs="n_frames") or {}
         row["termination"] = termination
         row["detail"] = detail
+        if avoid_lane:
+            # "returned" is the only healthy end state for a v1 episode; a
+            # window that ends mid-"passing" clipped the return leg.
+            row["avoid_phase_end"] = avoid_phase
+            if avoid_phase != "returned" and termination == "success":
+                termination = "success"  # keep, but flag for review
+                row["detail"] = (detail + f" (avoid_phase={avoid_phase})")
         row["duration_s"] = round(time.monotonic() - t0, 2)
         row["n_frames"] = st.get("n_frames")
         row["dropped"] = st.get("dropped")
@@ -811,9 +1140,21 @@ def main():
                    help="oracle = route_oracle pure pursuit on stored paths; "
                         "yolo = the tuned camera lane-follow stack, goal "
                         "stops supervised from the zone map")
+    p.add_argument("--obstacle-groups", type=int, default=0,
+                   help="obstacle-contrast groups (v9): same start + same "
+                        "cruise sentence, 3 variants — no obstacle / parked "
+                        "car in our lane (scripted oracle lane-change) / "
+                        "parked car in the other lane (hold lane)")
     p.add_argument("--cruise-groups", type=int, default=0,
                    help="lane-pair groups with no endpoint in the sentence; "
                         "the episode ends by duration while still cruising")
+    p.add_argument("--cw-cruise-groups", type=int, default=0,
+                   help="clockwise cruise groups: start yaw reversed by pi, "
+                        "sentences from cruise_cw (geometric lane words + "
+                        "explicit direction phrase)")
+    p.add_argument("--direct-groups", type=int, default=0,
+                   help="shortest-path groups: two different zones from the "
+                        "same start via the navigator's direct mode")
     p.add_argument("--floor-groups", type=int, default=6,
                    help="same request twice: measures this session's noise floor")
     p.add_argument("--split", default="train", choices=["train", "heldout"],
@@ -872,7 +1213,7 @@ def main():
     # is no fixing it after the fact without discarding episodes.
     goals = collections.Counter(v["intent_slots"].get("goal", "(cruise)")
                                 for g in plan for v in g["variants"])
-    levels = collections.Counter(v["intent_slots"]["speed_level"]
+    levels = collections.Counter(v["intent_slots"].get("speed_level", "(n/a)")
                                  for g in plan for v in g["variants"])
     bays = [goals[b] for b in ("bay1", "bay2", "bay3", "bay4")]
     print("goals:  " + ", ".join(f"{k}={v}" for k, v in sorted(goals.items())))
@@ -904,7 +1245,10 @@ def main():
 
     rclpy.init()
     ring_pts = [tuple(p) for p in paths["ring_center"][::2]]
-    node = Collector(args, plan, ring_pts=ring_pts)
+    lane_paths = {ln: [tuple(p) for p in paths[ln]]
+                  for ln in ("lane1", "lane2")}
+    node = Collector(args, plan, ring_pts=ring_pts, lane_paths=lane_paths,
+                     lane_spacing=paths["meta"]["spacing_m"])
     try:
         return node.run()
     except KeyboardInterrupt:
@@ -916,6 +1260,10 @@ def main():
         print("\ninterrupted — manifest.jsonl holds everything finished so far")
         return 130
     finally:
+        try:
+            node._set_obstacle(None)   # leave the world as we found it
+        except Exception:
+            pass
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
