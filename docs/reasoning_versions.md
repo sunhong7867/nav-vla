@@ -85,7 +85,7 @@ paraphrase_reasoning.py 변형). 속도는 티어만 인용(70/110/150), 거리�
 | r5 | v9r | 티어 | 자연 빈도 | **장애물 창 언급 7%** — 희소 신호 무시 | 보존 |
 | r6 | v9r | 티어 | `--obstacle-boost 4` | **장애물 창 100%, 환각 0**, v3y 무붕괴. 라이브: 3.6m 자율 정지(충돌0), 통과 자가 개시 실패 | 보존 · 데모 후보 |
 | r7 | v9r | 티어 | + phase 프레임 ×2 | greedy 무효 — T=0.7에서 phase 문장 등장 = **첫-토큰 "A car" 고착** 진단 | 보존 |
-| **r8** | **v9r4** | 티어 | + standstill_s 채널 | (진행 예정 — GO 트리거·watching 결속 겨냥) | 준비 중 |
+| **r8** | **v9r4** | 티어 | + standstill_s 채널 | **언어 절반 성공**: greedy에서 phase 문장 등장(7/28), v=0 프레임이 "Stopped/has not moved" 발화 — 채널이 phase를 결속. 언급률 100→79, 숫자 garble 잔존. **라이브: 액션 GO 여전히 미개시**(3.6m 정지 유지) — GO 전이 프레임 희소 + still=5 캡 구간 외삽이 유력 | 보존 |
 
 † r1의 speed 69%는 코퍼스가 거의 1.4 m/s라 부풀려진 수치.
 \* 체크포인트는 평가 후 중간본 즉시 삭제, `checkpoints/last`만 보존
@@ -115,9 +115,21 @@ paraphrase_reasoning.py 변형). 속도는 티어만 인용(70/110/150), 거리�
 - counterfactual 프로브: `eval_out/policy_cf_reasoning_r4.json`
   (텍스트 발산 2.0× 바닥).
 
+## 5.5 r8 학습-저장 함정 (재발 방지)
+
+train_reasoning.py의 데이터셋-통계 정규화 오버라이드는 메모리에만 있었고
+체크포인트 저장은 베이스(3차원) 프로세서 파일을 복사했다 → r8 서빙/평가가
+차원 불일치로 즉사. 수정: save()가 라이브 preproc를 `save_pretrained`로
+저장(2026-09-08). 기존 r8 체크포인트는 `code/fix_r8_processor.py`로 교정.
+
 ## 6. 미해결 계보 (다음 결정 지점)
 
-- r8 결과에 따라: watching 결속·GO 트리거 해소 여부 판정.
+- **GO 전이(액션) 미해결 — r9 후보 레버**: ① GO 전이 프레임(정지→출발
+  ~10프레임/ep) 전용 초고배 부스트, ② watch 시간 고정 2.5s→still 캡을
+  3.5로 낮춰 외삽 구간 제거, ③ 시연 단순화(감속-즉시-회피 재수집),
+  ④ 데모 실용해 = 감독(chat_gui) GO 외부화 + r8 내레이션.
+- 언어 phase 결속은 r8로 입증(정지 프레임 "Stopped" 발화) — 남은 건
+  live 캡 구간(still=5)에서의 템플릿 회귀와 숫자 garble.
 - 첫-토큰 고착의 라벨측 해법(모든 obstacle 문장 "A car X m ahead;"로
   시작 통일) — r8이 부족하면 r9 후보.
 - zone 접지(31~38% 정체), 거리 수치 garble("A car 110, 1.3 m"),

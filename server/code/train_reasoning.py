@@ -185,12 +185,20 @@ def main():
                          "pretrained_model")
         os.makedirs(d, exist_ok=True)
         policy.save_pretrained(d)
-        # serving needs the processor/normalizer files next to the model
+        # serving needs the processor/normalizer files next to the model.
+        # Save the LIVE preprocessor (it may carry dataset-stats overrides —
+        # copying the base checkpoint's files shipped 3-dim stats with the
+        # 4-dim r8 model, 2026-09-08); base files only fill anything the
+        # pipeline save does not produce.
         for f in os.listdir(args.base_checkpoint):
             if f not in ("model.safetensors", "config.json") and \
                     os.path.isfile(os.path.join(args.base_checkpoint, f)):
                 shutil.copy2(os.path.join(args.base_checkpoint, f),
                              os.path.join(d, f))
+        try:
+            preproc.save_pretrained(d)
+        except Exception as e:                              # noqa: BLE001
+            print(f"preprocessor save failed ({e}) — base copies remain")
         link = os.path.join(args.out, "checkpoints", "last")
         if os.path.islink(link):
             os.remove(link)

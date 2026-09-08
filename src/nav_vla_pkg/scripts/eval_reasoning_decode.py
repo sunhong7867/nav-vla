@@ -109,6 +109,8 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--rp", type=float, default=1.0,
                     help="repetition penalty for the decode")
+    ap.add_argument("--temp", type=float, default=0.0,
+                    help="sampling temperature (0 = greedy)")
     ap.add_argument("--obstacle-frames", action="store_true",
                     help="sample only frames with a car within 14 m arc "
                          "(measures obstacle grounding instead of diluting "
@@ -171,14 +173,29 @@ def main():
             ep, row["frame"])).convert("RGB"))
         t_img = (torch.from_numpy(img).permute(2, 0, 1).float()
                  / 255.0).unsqueeze(0)
+        state = list(row["state"])
+        want = policy.config.input_features["observation.state"].shape[0]
+        if want == len(state) + 1:
+            # r8+ standstill_s channel: seconds at rest before this frame
+            # (same rule as to_lerobot --standstill-state, 10 Hz rows)
+            rows_all = [json.loads(l) for l in open(
+                os.path.join(ep, "resampled_10hz.jsonl"))]
+            still, k0 = 0.0, rrow["k"]
+            j = k0
+            while j >= 0 and (rows_all[j]["state"] or [9])[0] < 0.15 \
+                    and still < 5.0:
+                still += 0.1
+                j -= 1
+            state = state + [min(5.0, still)]
         batch = {cam_key: t_img,
                  "observation.state": torch.tensor(
-                     row["state"], dtype=torch.float32).unsqueeze(0),
+                     state, dtype=torch.float32).unsqueeze(0),
                  "task": [meta.get("instruction", "")]}
         batch = preproc(batch)
         with torch.inference_mode():
             text = policy.generate_reasoning(
-                batch, repetition_penalty=args.rp)[0]
+                batch, repetition_penalty=args.rp,
+                temperature=args.temp)[0]
         sc = score(text, rrow["facts"])
         for k2, v in sc.items():
             totals[k2] = totals.get(k2, 0) + 1
