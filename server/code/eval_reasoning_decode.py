@@ -111,6 +111,9 @@ def main():
                     help="repetition penalty for the decode")
     ap.add_argument("--temp", type=float, default=0.0,
                     help="sampling temperature (0 = greedy)")
+    ap.add_argument("--still-cap", type=float, default=5.0,
+                    help="standstill_s cap, matching the checkpoint's "
+                         "to_lerobot --standstill-cap")
     ap.add_argument("--obstacle-frames", action="store_true",
                     help="sample only frames with a car within 14 m arc "
                          "(measures obstacle grounding instead of diluting "
@@ -183,10 +186,10 @@ def main():
             still, k0 = 0.0, rrow["k"]
             j = k0
             while j >= 0 and (rows_all[j]["state"] or [9])[0] < 0.15 \
-                    and still < 5.0:
+                    and still < args.still_cap:
                 still += 0.1
                 j -= 1
-            state = state + [min(5.0, still)]
+            state = state + [min(args.still_cap, still)]
         batch = {cam_key: t_img,
                  "observation.state": torch.tensor(
                      state, dtype=torch.float32).unsqueeze(0),

@@ -111,22 +111,29 @@ def main():
         # via hf dataset columns; read them once
         epi = ds.hf_dataset["episode_index"]
         fri = ds.hf_dataset["frame_index"]
-        # Two tiers: any car-mention frame gets the base boost; the PHASE
-        # frames (watching / the has-not-moved pass / the return) get twice
-        # that — r6 showed the base boost teaches detection (7 -> 100%
-        # mention) but not the phase semantics (v=0 frames still narrated
-        # as cruising, ours/other lane confused).
+        # Three tiers. r8 lesson: detection is solved at 4x, phases bind at
+        # 8x, but the GO TRANSITION — the ~10 frames where the demonstrator
+        # commits from standstill to the pass — is still ~1e-4 of the flow
+        # loss and the live policy parks forever. Those frames (the head of
+        # every "has not moved" segment) get 6x the base boost (24x).
         PHASE_PAT = ("watching", "has not moved", "returning to the")
+        GO_HEAD_FRAMES = 10
         for i in range(len(ds)):
             e, fidx = int(epi[i]), int(fri[i])
             for f0, f1, variants in rds.by_ep.get(e, ()):
                 if f0 <= fidx <= f1:
                     joined = " ".join(variants).lower()
-                    if any(p in joined for p in PHASE_PAT):
+                    if "has not moved" in joined and \
+                            fidx < f0 + GO_HEAD_FRAMES:
+                        w[i] = args.obstacle_boost * 6.0
+                    elif any(p in joined for p in PHASE_PAT):
                         w[i] = args.obstacle_boost * 2.0
                     elif "car" in joined:
                         w[i] = args.obstacle_boost
                     break
+        n_go = int((w == args.obstacle_boost * 6.0).sum())
+        print(f"GO-transition frames boosted x{args.obstacle_boost * 6:.0f}:"
+              f" {n_go}")
         n_boost = int((w > 1.0).sum())
         print(f"obstacle boost x{args.obstacle_boost}: "
               f"{n_boost}/{len(ds)} frames")

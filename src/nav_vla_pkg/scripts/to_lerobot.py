@@ -131,6 +131,11 @@ def main():
                         "real values; cruise/cw episodes get (0, 0) so the "
                         "channel reads 'no goal'. Serving must feed the same "
                         "two numbers or the checkpoint is unusable.")
+    p.add_argument("--standstill-cap", type=float, default=5.0,
+                   help="cap for standstill_s; keep <= the demonstrations' "
+                        "longest watch so serving never extrapolates "
+                        "(r8 lesson: live cap-5 sat outside the 0.4-3.5 s "
+                        "training range)")
     p.add_argument("--standstill-state", action="store_true",
                    help="append standstill_s (seconds at rest, cap 5) to "
                         "observation.state — the v9 watch-then-avoid GO "
@@ -206,9 +211,11 @@ def main():
             still = 0.0
             for r in rows:
                 v = (r["state"] or [9.9])[0]
-                still = min(5.0, still + 1.0 / args.fps) if v < 0.15 else 0.0
+                still = (min(args.standstill_cap, still + 1.0 / args.fps)
+                         if v < 0.15 else 0.0)
                 r["state"] = list(r["state"]) + [still]
-        print("standstill-state channel appended (cap 5.0 s)")
+        print(f"standstill-state channel appended "
+              f"(cap {args.standstill_cap} s)")
     total_rows = sum(len(r) for _, _, _, r, _ in eps)
     total_dropped = sum(d for *_, d in eps)
     print(f"{len(eps)} episodes, {total_rows} frames at {args.fps} Hz")

@@ -179,6 +179,9 @@ class VlaBridge(Node):
         # a 4th state channel (seconds at rest, cap 5)
         self.standstill_state = bool(self.declare_parameter(
             "standstill_state", False).value)
+        # must match the checkpoint's to_lerobot --standstill-cap
+        self.standstill_cap = float(self.declare_parameter(
+            "standstill_cap", 5.0).value)
         self._still_s, self._still_t = 0.0, None
         # Goal conditioning (v8g+ checkpoints, observation.state dim 5).
         # The two extra state dims are [bearing_to_goal_rad, dist_to_goal_m]
@@ -789,7 +792,7 @@ class VlaBridge(Node):
             if self.standstill_state:
                 # matches to_lerobot --standstill-state: seconds at rest,
                 # capped at 5 — the learned GO trigger for watch-then-avoid
-                state = state + [min(5.0, self._still_s)]
+                state = state + [min(self.standstill_cap, self._still_s)]
             # `tick` is the absolute count of actions already executed. A
             # deterministic server (replay, or any stub generating a continuous
             # signal) needs it to phase-lock: without it the server can only
