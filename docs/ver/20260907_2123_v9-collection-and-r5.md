@@ -51,6 +51,41 @@ and passing in the inner lane." (거리는 범퍼 간격 기준.)
 - 다음 레버 후보: phase별 세분 부스트(watching/passing만 추가 가중),
   거리 수치를 5 m 버킷 단어로("a few meters ahead"), v9 데이터 증량.
 
+## r7 (phase 2배 부스트, 25k) — greedy에선 무효, 원인 확정
+
+- greedy 지표는 r6와 동률(장애물 100% 유지, lane 39% 정체, phase 단어
+  0/28). **T=0.7 샘플링에서 phase 문장이 7/28 등장** — 모델은
+  "Stopped…, watching" / "has not moved — treating it as parked"를
+  알고 있으나 **greedy 첫-토큰이 "A car" 템플릿에 고착**되어 진입 불가.
+- 동시에 샘플링된 phase 문장이 속도와 무관하게 출현(v=1.5에서 "Stopped")
+  — phase 선택이 state(v=0)에 결속되지 않음. state 1토큰이 프리픽스
+  ~460토큰에 희석되는 구조적 요인 추정.
+- **다음 마일스톤 후보(일석이조)**: state에 standstill-경과 채널 추가 —
+  액션의 GO 트리거 인과 혼동과 언어의 watching-phase 결속을 한 번에
+  건드림(변환·서빙 state_dim 변경 + 재학습 필요). 보조 레버: 라벨
+  구조 변경(모든 obstacle 문장을 "A car X m ahead;"로 통일 시작 →
+  phase가 문중 선택이 되어 첫-토큰 고착 회피), 평가·서빙에 온도 옵션
+  (`--temp`, eval_reasoning_decode) 이미 추가됨.
+
+## r6 라이브 데모 (2026-09-08, 정책 단독 회피 시도)
+
+베어시뮬 + lane2 전방 26 m 장애물 + r6 서빙(GPU0), cruise 지시만 주고
+75 s 관측 (`scratchpad/r6_demo.py` 패턴):
+
+- **액션**: 접근→감속→**장애물 3.63 m 앞 정지(충돌 없음)**… 그리고 60 s
+  내내 정지 유지. **통과를 스스로 개시하지 못함.**
+- 원인 진단 — **관찰 불가능한 GO 트리거(인과 혼동)**: 학습 시연에서
+  "출발" 신호는 외부 타이머(정지 2.5 s 후 오라클 재명령)였다. 카메라와
+  state에는 "정지 t초째"가 없으므로, 시각적으로 동일한 정지 프레임에서
+  정지가 다수 지배 → 모방 정책은 계속 정지가 최적. 해소하려면 트리거를
+  관찰 가능하게 해야 함: (a) state에 standstill-경과 채널 추가,
+  (b) 대기 시간 0으로 즉시 회피(감속만 유지), (c) 데모에선 감독
+  (chat_gui) 문장 전환으로 GO를 외부화(현행 데모 방식과 동일).
+- **언어**: 차량 인지는 라이브에서도 일관("A car sits in the outer
+  lane…") — r6의 100% 접지가 실차로 재현. phase 혼동(정지 중 "speeding
+  up", ours/other 템플릿 뒤바뀜)과 "leisurely tier of 110" 티어 단어-숫자
+  불일치도 heldout 진단 그대로 재현. r7(phase 2배 부스트)이 언어 측 대응.
+
 ## 기타
 
 - 로컬 `~/venv/navvla` 소실(사용자 정리 추정) — 패러프레이즈는 시스템

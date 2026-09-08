@@ -111,11 +111,20 @@ def main():
         # via hf dataset columns; read them once
         epi = ds.hf_dataset["episode_index"]
         fri = ds.hf_dataset["frame_index"]
+        # Two tiers: any car-mention frame gets the base boost; the PHASE
+        # frames (watching / the has-not-moved pass / the return) get twice
+        # that — r6 showed the base boost teaches detection (7 -> 100%
+        # mention) but not the phase semantics (v=0 frames still narrated
+        # as cruising, ours/other lane confused).
+        PHASE_PAT = ("watching", "has not moved", "returning to the")
         for i in range(len(ds)):
             e, fidx = int(epi[i]), int(fri[i])
             for f0, f1, variants in rds.by_ep.get(e, ()):
                 if f0 <= fidx <= f1:
-                    if any("car" in v.lower() for v in variants):
+                    joined = " ".join(variants).lower()
+                    if any(p in joined for p in PHASE_PAT):
+                        w[i] = args.obstacle_boost * 2.0
+                    elif "car" in joined:
                         w[i] = args.obstacle_boost
                     break
         n_boost = int((w > 1.0).sum())

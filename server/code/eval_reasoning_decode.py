@@ -109,6 +109,8 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--rp", type=float, default=1.0,
                     help="repetition penalty for the decode")
+    ap.add_argument("--temp", type=float, default=0.0,
+                    help="sampling temperature (0 = greedy)")
     ap.add_argument("--obstacle-frames", action="store_true",
                     help="sample only frames with a car within 14 m arc "
                          "(measures obstacle grounding instead of diluting "
@@ -178,7 +180,8 @@ def main():
         batch = preproc(batch)
         with torch.inference_mode():
             text = policy.generate_reasoning(
-                batch, repetition_penalty=args.rp)[0]
+                batch, repetition_penalty=args.rp,
+                temperature=args.temp)[0]
         sc = score(text, rrow["facts"])
         for k2, v in sc.items():
             totals[k2] = totals.get(k2, 0) + 1
