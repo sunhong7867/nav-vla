@@ -138,8 +138,32 @@ def main():
         num_workers=args.num_workers, collate_fn=collate_with_text,
         pin_memory=True, drop_last=True, persistent_workers=True)
 
+    # State-dim adaptation (r8): the v9r4 dataset appends standstill_s, so
+    # observation.state is wider than the base checkpoint's config. SmolVLA
+    # pads state to max_state_dim (32) before projecting, so the WEIGHTS
+    # are unaffected — only the config feature shape and the normalizer
+    # stats must follow the dataset (mirrors lerobot_train's
+    # preprocessor_overrides when resuming from a pretrained path).
+    ds_state_shape = tuple(ds.meta.stats["observation.state"]["mean"].shape)
+    cfg_state = policy.config.input_features["observation.state"]
+    overrides = {}
+    if tuple(cfg_state.shape) != ds_state_shape:
+        from lerobot.configs.types import FeatureType, PolicyFeature
+        policy.config.input_features["observation.state"] = PolicyFeature(
+            type=FeatureType.STATE, shape=ds_state_shape)
+        print(f"state feature {tuple(cfg_state.shape)} -> {ds_state_shape} "
+              "(dataset carries extra channels)")
+    # always normalize with THIS dataset's stats, like lerobot-train
+    overrides = {"preprocessor_overrides": {
+            "normalizer_processor": {
+                "stats": ds.meta.stats,
+                "features": {**policy.config.input_features,
+                             **policy.config.output_features},
+                "norm_map": policy.config.normalization_mapping,
+            }}}
     preproc, _ = make_pre_post_processors(policy.config,
-                                          args.base_checkpoint)
+                                          args.base_checkpoint,
+                                          **overrides)
 
     head_params = list(policy.reasoning_head.parameters())
     head_ids = {id(p) for p in head_params}

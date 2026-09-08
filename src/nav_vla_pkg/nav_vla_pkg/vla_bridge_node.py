@@ -175,6 +175,11 @@ class VlaBridge(Node):
         # the training/serving contract explicit for controlled evaluation.
         self.force_zero_steer_state = bool(self.declare_parameter(
             "force_zero_steer_state", False).value)
+        # r8+ checkpoints trained with to_lerobot --standstill-state expect
+        # a 4th state channel (seconds at rest, cap 5)
+        self.standstill_state = bool(self.declare_parameter(
+            "standstill_state", False).value)
+        self._still_s, self._still_t = 0.0, None
         # Goal conditioning (v8g+ checkpoints, observation.state dim 5).
         # The two extra state dims are [bearing_to_goal_rad, dist_to_goal_m]
         # in the MOTION-heading frame (raw gz yaw + yaw_to_heading_deg), the
@@ -421,6 +426,13 @@ class VlaBridge(Node):
     def _odom_cb(self, msg):
         v = msg.twist.twist.linear.x
         w = msg.twist.twist.angular.z
+        now = time.monotonic()
+        if abs(v) < 0.15:
+            dt = now - self._still_t if self._still_t else 0.0
+            self._still_s += min(dt, 0.5)
+        else:
+            self._still_s = 0.0
+        self._still_t = now
         # Steering angle back-solved from the bicycle model, matching the
         # `state` vector the corpus was resampled with.
         steer_proxy = (
@@ -774,6 +786,10 @@ class VlaBridge(Node):
                     time.sleep(0.05)
                     continue
                 state = state + gdims
+            if self.standstill_state:
+                # matches to_lerobot --standstill-state: seconds at rest,
+                # capped at 5 — the learned GO trigger for watch-then-avoid
+                state = state + [min(5.0, self._still_s)]
             # `tick` is the absolute count of actions already executed. A
             # deterministic server (replay, or any stub generating a continuous
             # signal) needs it to phase-lock: without it the server can only
