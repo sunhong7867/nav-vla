@@ -1,9 +1,9 @@
 #!/bin/bash
 # v9 장애물 대조쌍 — 본수집: train 40그룹 + heldout 8그룹 (~2h) + finalize.
-# 파일럿(2026-09-04)에서 검증된 경로. 클록 500 Hz — 100 Hz는 pose 스탬프를
-# 10 ms로 양자화해 액션 라벨에 p50 5.5 cm 보간 오차를 넣는다(게이트 2 cm).
-# 그룹 수는 고정값: 파일럿에서 V9_GROUPS 환경변수 유입 사고(1000그룹)가
-# 있어 환경 오버라이드를 제거했다.
+# 클록은 100 Hz로 되돌림: 500 Hz 실험(run5)은 CPU 경합으로 tf 스트림에 2 s
+# 구멍을 냈다(66/120 손실). 스탬프 정밀도는 레코더가 브리지 헤더 시간을
+# 쓰도록 고쳐 해결(2026-09-07). 그룹 수는 고정값: V9_GROUPS 환경변수
+# 유입 사고(1000그룹) 재발 방지.
 WS=/home/sh/ROS2_project/nav-vla
 OUT=$WS/eval_out/v9_full
 DATA=$WS/src/nav_vla_pkg/data_v9
@@ -30,11 +30,11 @@ sleep 3
 rm -rf ~/.gz/sim/log
 rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_* /dev/shm/fastdds_* /dev/shm/sem.fastdds_* 2>/dev/null
 
-echo "[v9] 시뮬 기동 (clock 500 Hz)..."
+echo "[v9] 시뮬 기동 (clock 100 Hz, 헤더 스탬프 기록)..."
 setsid nohup ros2 launch simulation_pkg driving_sim.launch.py \
   use_camera:=true use_perception_pipeline:=false use_driver:=false \
   use_policy:=false use_debug_visualizers:=false use_vla_camera:=false \
-  clock_hz:=500.0 \
+  clock_hz:=100.0 \
   > "$OUT/sim.log" 2>&1 < /dev/null &
 for _ in $(seq 1 24); do
   N=$(timeout 5 ros2 topic list 2>/dev/null | grep -c "camera/image_raw")

@@ -89,6 +89,14 @@ def score(text, facts):
             for n in raws))
     if ok:
         row["speed"] = all(ok)
+    # v9 obstacle grounding: a car within 14 m (arc) must be mentioned;
+    # mentioning a car when none is anywhere near is a hallucination.
+    ob = facts.get("obstacle")
+    says_car = bool(re.search(r"\bcar\b|\bparked\b|\bvehicle\b", low))
+    if ob is not None and abs(ob.get("arc_m", 99)) <= 14:
+        row["obstacle"] = says_car
+    elif ob is None:
+        row["obstacle"] = not says_car
     return row
 
 
@@ -101,6 +109,10 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--rp", type=float, default=1.0,
                     help="repetition penalty for the decode")
+    ap.add_argument("--obstacle-frames", action="store_true",
+                    help="sample only frames with a car within 14 m arc "
+                         "(measures obstacle grounding instead of diluting "
+                         "it across a whole cruise)")
     args = ap.parse_args()
     rng = random.Random(args.seed)
 
@@ -139,8 +151,18 @@ def main():
         rlines = [json.loads(l) for l in open(
             os.path.join(ep, "reasoning.jsonl"))]
         meta = json.load(open(os.path.join(ep, "meta.json")))
-        k = rng.randrange(len(rows) - 1)
-        picks.append((ep, meta, rows[k], rlines[1 + k]))
+        if args.obstacle_frames:
+            ks = [r["k"] for r in rlines[1:]
+                  if (r["facts"].get("obstacle") or {}).get("arc_m")
+                  is not None
+                  and 0 <= r["facts"]["obstacle"]["arc_m"] <= 14]
+            if not ks:
+                continue
+            for k in rng.sample(ks, min(4, len(ks))):
+                picks.append((ep, meta, rows[k], rlines[1 + k]))
+        else:
+            k = rng.randrange(len(rows) - 1)
+            picks.append((ep, meta, rows[k], rlines[1 + k]))
 
     counts, totals = {}, {}
     out_rows = []

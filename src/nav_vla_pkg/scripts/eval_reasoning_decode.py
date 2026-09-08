@@ -34,6 +34,7 @@ import re
 import sys
 
 NUM_MS = re.compile(r"(\d+\.?\d*)\s*m/s")
+RAW_SPEED = re.compile(r"(?:speed|tier of|target of)\s+(\d+)\b")
 LANE_WORD = {"lane1": "inner", "lane2": "outer"}
 TREND_PAT = {"decel": r"slow|brak|decel|reduc",
              "accel": r"accel|speed(ing)? up|pick|increas",
@@ -69,13 +70,33 @@ def score(text, facts):
             if other != tr and re.search(pat, low):
                 ok = False
         row["trend"] = ok
+    ok = []
     nums = [float(x) for x in NUM_MS.findall(text)]
-    if nums:
-        refs = [facts.get("v_mps"), facts.get("v_plan_end_mps"),
-                facts.get("target_v_mps")]
-        refs = [r for r in refs if r is not None]
-        row["speed"] = all(any(abs(n - r) <= 0.35 for r in refs)
-                           for n in nums)
+    if nums:   # legacy m/s phrasing
+        refs = [r for r in (facts.get("v_mps"), facts.get("v_plan_end_mps"),
+                            facts.get("target_v_mps")) if r is not None]
+        ok.append(all(any(abs(n - r) <= 0.35 for r in refs) for n in nums))
+    raws = [int(x) for x in RAW_SPEED.findall(text)]
+    if raws:
+        # tier-quoting labels: the only legitimate quoted speed is the
+        # commanded tier (exact); older raw phrasing may also quote the
+        # measured/plan speed (±18 raw = ±0.35 m/s)
+        refs_exact = [facts.get("target_raw")]
+        refs_soft = [r for r in (facts.get("v_raw"),
+                                 facts.get("v_plan_end_raw")) if r is not None]
+        ok.append(all(
+            n in refs_exact or any(abs(n - r) <= 18 for r in refs_soft)
+            for n in raws))
+    if ok:
+        row["speed"] = all(ok)
+    # v9 obstacle grounding: a car within 14 m (arc) must be mentioned;
+    # mentioning a car when none is anywhere near is a hallucination.
+    ob = facts.get("obstacle")
+    says_car = bool(re.search(r"\bcar\b|\bparked\b|\bvehicle\b", low))
+    if ob is not None and abs(ob.get("arc_m", 99)) <= 14:
+        row["obstacle"] = says_car
+    elif ob is None:
+        row["obstacle"] = not says_car
     return row
 
 
@@ -88,6 +109,10 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--rp", type=float, default=1.0,
                     help="repetition penalty for the decode")
+    ap.add_argument("--obstacle-frames", action="store_true",
+                    help="sample only frames with a car within 14 m arc "
+                         "(measures obstacle grounding instead of diluting "
+                         "it across a whole cruise)")
     args = ap.parse_args()
     rng = random.Random(args.seed)
 
@@ -126,8 +151,18 @@ def main():
         rlines = [json.loads(l) for l in open(
             os.path.join(ep, "reasoning.jsonl"))]
         meta = json.load(open(os.path.join(ep, "meta.json")))
-        k = rng.randrange(len(rows) - 1)
-        picks.append((ep, meta, rows[k], rlines[1 + k]))
+        if args.obstacle_frames:
+            ks = [r["k"] for r in rlines[1:]
+                  if (r["facts"].get("obstacle") or {}).get("arc_m")
+                  is not None
+                  and 0 <= r["facts"]["obstacle"]["arc_m"] <= 14]
+            if not ks:
+                continue
+            for k in rng.sample(ks, min(4, len(ks))):
+                picks.append((ep, meta, rows[k], rlines[1 + k]))
+        else:
+            k = rng.randrange(len(rows) - 1)
+            picks.append((ep, meta, rows[k], rlines[1 + k]))
 
     counts, totals = {}, {}
     out_rows = []

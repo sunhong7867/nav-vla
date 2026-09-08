@@ -46,6 +46,11 @@ def main():
     ap.add_argument("--seed", type=int, default=1000)
     ap.add_argument("--sample-decode", action="store_true",
                     help="greedy-decode 2 samples at every save (slow)")
+    ap.add_argument("--obstacle-boost", type=float, default=1.0,
+                    help="sampling weight for frames whose reasoning "
+                         "mentions the parked car (r5 lesson: at natural "
+                         "frequency, 10%% of frames, the model ignores the "
+                         "car entirely — obstacle mention 7%% on heldout)")
     args = ap.parse_args()
 
     if os.path.exists(args.out):
@@ -95,8 +100,32 @@ def main():
     sidecar = os.path.join(args.dataset, "reasoning_labels.jsonl")
     rds = ReasoningDataset(ds, sidecar, seed=args.seed)
     print(f"dataset: {len(rds)} frames, sidecar {rds.n_rows} segment rows")
+    sampler = None
+    if args.obstacle_boost > 1.0:
+        # frame-level weights from the sidecar: any frame covered by a
+        # segment whose variants mention the car gets the boost
+        import numpy as np
+        w = np.ones(len(ds), dtype=np.float64)
+        ep_starts = {}
+        # LeRobotDataset maps global index -> (episode_index, frame_index)
+        # via hf dataset columns; read them once
+        epi = ds.hf_dataset["episode_index"]
+        fri = ds.hf_dataset["frame_index"]
+        for i in range(len(ds)):
+            e, fidx = int(epi[i]), int(fri[i])
+            for f0, f1, variants in rds.by_ep.get(e, ()):
+                if f0 <= fidx <= f1:
+                    if any("car" in v.lower() for v in variants):
+                        w[i] = args.obstacle_boost
+                    break
+        n_boost = int((w > 1.0).sum())
+        print(f"obstacle boost x{args.obstacle_boost}: "
+              f"{n_boost}/{len(ds)} frames")
+        sampler = torch.utils.data.WeightedRandomSampler(
+            torch.from_numpy(w), num_samples=len(ds), replacement=True)
     dl = torch.utils.data.DataLoader(
-        rds, batch_size=args.batch_size, shuffle=True,
+        rds, batch_size=args.batch_size,
+        shuffle=(sampler is None), sampler=sampler,
         num_workers=args.num_workers, collate_fn=collate_with_text,
         pin_memory=True, drop_last=True, persistent_workers=True)
 

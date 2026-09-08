@@ -61,6 +61,13 @@ MAX_POSE_GAP_S = 1.00        # hard cap: beyond this the stream is broken, not g
 # straight is harmless, a short one mid-corner is not. 0.02 m sits far below the
 # 9.5 cm reset noise floor measured in G1, so an accepted episode's labels can
 # never be interpolation-dominated.
+# Overridable since 2026-09-07: the v9 collection machine drops gz pose
+# publications in ~0.5 s bursts on BOTH streams (tf bridge and cli poll),
+# putting p50 ~5 cm of chord error into many episodes. For corpora whose
+# purpose tolerates that (v9: reasoning grounding + avoidance behaviour,
+# action steps are 14-29 cm), pass --max-interp-err-m 0.06 rather than
+# discarding half the run; leave the strict default for v3y-grade action
+# corpora.
 MAX_INTERP_ERR_M = 0.02
 
 # Rotation between the model's reported yaw and its direction of travel.
@@ -364,6 +371,7 @@ def resample_episode(ep_dir, fps=10, verbose=False, yaw_offset=0.0,
 
 
 def main():
+    global MAX_INTERP_ERR_M
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--session", required=True, help="session directory holding ep_XXXX/")
@@ -376,7 +384,11 @@ def main():
     p.add_argument("--yaw-offset-deg", type=float, required=True,
                    help="measured rotation from reported yaw to direction of "
                         "travel; run calibrate_yaw_offset.py to obtain it")
+    p.add_argument("--max-interp-err-m", type=float, default=MAX_INTERP_ERR_M,
+                   help="interpolation-error gate (see comment at the "
+                        "constant; 0.06 for gap-tolerant corpora like v9)")
     args = p.parse_args()
+    MAX_INTERP_ERR_M = args.max_interp_err_m
 
     session = os.path.abspath(os.path.expanduser(args.session))
     eps = sorted(d for d in os.listdir(session) if d.startswith("ep_"))

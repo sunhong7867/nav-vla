@@ -32,8 +32,10 @@ for sess in "${SESSIONS[@]}"; do
   # -90 deg is measured, not assumed: straight-line runs from four headings gave
   # -90.00 with sd 0.00 (docs/ver/20260728_1713 section 7). tf is the stream the
   # action labels are built from; the CLI fallback is 15 Hz and lags.
+  # RESAMPLE_EXTRA: optional overrides (e.g. "--max-interp-err-m 0.06" for
+  # gap-tolerant corpora like v9 — see the constant in resample_episodes.py)
   python3 "$S/resample_episodes.py" --session "$sess" \
-      --yaw-offset-deg -90 --pose-source tf
+      --yaw-offset-deg -90 --pose-source tf ${RESAMPLE_EXTRA:-}
 done
 
 echo
