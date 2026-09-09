@@ -928,10 +928,21 @@ class Collector(Node):
             rclpy.spin_once(self, timeout_sec=0.02)
             if ob.get("present") and self.tf and math.hypot(
                     self.tf[0] - ob["x"], self.tf[1] - ob["y"]) < 2.0:
-                # center distance 2 m = bodies interpenetrating; flag it as
-                # its own termination so it can never pack as "success"
+                # NOTE: 2.0 m center is only past SIDE-BY-SIDE geometry
+                # (lane offset 3.16 m); a HEAD-ON contact happens at ~4.6 m
+                # center (combined half-lengths) and is checked below via
+                # the same-lane arc gap. The r9 reversal (2026-09-08): the
+                # live policy pushed bumper-to-bumper and this guard alone
+                # called it a clean stop.
                 termination, detail = "collision", "ego within 2 m of obstacle"
                 break
+            if avoid_phase in ("approach", "stopping", "waiting") and \
+                    ob.get("present"):
+                fwd_g, _ = self._ob_arc_gap(ob)
+                if fwd_g is not None and 0.0 < fwd_g < 4.8:
+                    termination, detail = "collision", (
+                        f"head-on arc gap {fwd_g:.2f} m < 4.8 (body extents)")
+                    break
             if avoid_phase in ("approach", "stopping", "waiting", "passing"):
                 fwd, behind = self._ob_arc_gap(ob)
                 now = time.monotonic()

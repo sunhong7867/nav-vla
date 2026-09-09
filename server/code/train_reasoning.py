@@ -126,14 +126,21 @@ def main():
                     if "has not moved" in joined and \
                             fidx < f0 + GO_HEAD_FRAMES:
                         w[i] = args.obstacle_boost * 6.0
+                    elif "ahead in our" in joined:
+                        # the braking ramp: r9 reversal showed the live
+                        # policy under-stops into body contact — these are
+                        # the frames that demonstrate the stop line
+                        w[i] = args.obstacle_boost * 4.0
                     elif any(p in joined for p in PHASE_PAT):
                         w[i] = args.obstacle_boost * 2.0
                     elif "car" in joined:
                         w[i] = args.obstacle_boost
                     break
         n_go = int((w == args.obstacle_boost * 6.0).sum())
+        n_ramp = int((w == args.obstacle_boost * 4.0).sum())
         print(f"GO-transition frames boosted x{args.obstacle_boost * 6:.0f}:"
-              f" {n_go}")
+              f" {n_go}; braking-ramp frames "
+              f"x{args.obstacle_boost * 4:.0f}: {n_ramp}")
         n_boost = int((w > 1.0).sum())
         print(f"obstacle boost x{args.obstacle_boost}: "
               f"{n_boost}/{len(ds)} frames")
