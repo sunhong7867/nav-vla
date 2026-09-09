@@ -206,7 +206,17 @@ class EpisodeRecorder(Node):
         self._claim_session()
 
         self.gz_bin = resolve_gz_bin(self.declare_parameter("gz_bin", "").value)
-        self.stream = WorldPoseStream(self.gz_bin, self.model_name).start()
+        # The CLI pose stream is a resident `gz topic -e` (ruby) that parses
+        # the FULL dynamic_pose text dump. With the v9 obstacle fleet resident
+        # the dump is ~5x bigger and the ruby burns a whole core (96%
+        # measured 2026-09-09), starving gz's own publishers — the likely
+        # root of the tf gaps that rejected half of every v9 batch. The tf
+        # bridge stream is the primary source; collections can turn this
+        # fallback off entirely.
+        self.use_cli_pose = bool(self.declare_parameter(
+            "use_cli_pose_stream", True).value)
+        self.stream = (WorldPoseStream(self.gz_bin, self.model_name).start()
+                       if self.use_cli_pose else None)
 
         sensor_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -559,11 +569,11 @@ class EpisodeRecorder(Node):
             time.sleep(period)
             if not self._rec:
                 continue
-            seq = self.stream.seq
+            seq = self.stream.seq if self.stream else -1
             if seq == last_seq:
                 continue
             last_seq = seq
-            pose = self.stream.latest
+            pose = self.stream.latest if self.stream else None
             if pose is None:
                 continue
             with self._lock:
@@ -647,7 +657,12 @@ class EpisodeRecorder(Node):
         if self._ego_idx is None:
             self._identify_ego()
 
-        pose = self.stream.latest
+        pose = self.stream.latest if self.stream else None
+        if pose is None:
+            # CLI stream disabled (use_cli_pose_stream:=false): one-shot
+            # `gz model -p` per episode start is cheap (~150 ms) and only
+            # the start_pose needs it — the per-frame streams are tf-based.
+            pose = query_world_pose(self.gz_bin, self.model_name)
         if pose is None:
             self._status("error", detail="no pose yet — is the sim running?")
             return
@@ -818,7 +833,8 @@ class EpisodeRecorder(Node):
             self.stop_episode("operator_abort")
         self._run_writer = False
         try:
-            self.stream.stop()
+            if self.stream:
+                self.stream.stop()
         except Exception:
             pass
         super().destroy_node()

@@ -115,7 +115,7 @@ OB_PARK = {m: (60.0 + 8.0 * i, 60.0) for i, m in enumerate(OB_MODELS)}
 # ~4.6 m of it (prius half-length 2.4 + hatchback half 2.2), so 8.0 leaves
 # ~3.4 m of visible bumper gap. The first run used 3.0 and the "stop"
 # ended 1.6 m INSIDE the parked car (watched live, 2026-09-07).
-OB_STOP_MARGIN_M = 8.0
+OB_STOP_MARGIN_M = 12.0
 OB_BODY_EXTENT_M = 4.6      # combined half-lengths, for labels/collision
 OB_WAIT_S = 2.5             # observation hold before committing to the pass
 OB_STOP_TIMEOUT_S = 12.0    # standstill never reached -> go anyway
@@ -531,6 +531,10 @@ def build_plan(args, paths, bank, rng):
                 # scripted avoidance only when the car blocks OUR lane
                 "avoid_lane": other if ob.get("in_our_lane") else None,
             })
+        if getattr(args, "obstacle_v1_only", False):
+            # repair batches: only the avoidance variant, to replace v1
+            # demos disqualified by the stop-quality audit
+            variants = [v for v in variants if v["avoid_lane"]]
         groups.append({"cf_group_id": f"{args.group_prefix}o{gi:04d}",
                        "kind": "obstacle", "cf_axis": "obstacle", "start": sp,
                        "variants": variants})
@@ -797,7 +801,14 @@ class Collector(Node):
         return ok_all
 
     def _ob_arc_gap(self, ob):
-        """(forward_m, behind_m) from ego to the obstacle along its lane."""
+        """(forward_m, behind_m), SIGNED-safe.
+
+        forward_m is negative once the ego's nearest lane index has passed
+        the obstacle's. The old unsigned modulo wrapped to ~loop exactly
+        when the ego overlapped the car, which blinded the head-on guard
+        in the danger zone (audit 2026-09-09: 7/18 "success" episodes
+        stopped at 2.5-4 m with the guard silent).
+        """
         if not self.tf:
             return None, None
         pts = self.lane_paths[ob["lane"]]
@@ -805,8 +816,11 @@ class Collector(Node):
         ex, ey = self.tf[0], self.tf[1]
         ei = min(range(n), key=lambda j: (pts[j][0] - ex) ** 2
                  + (pts[j][1] - ey) ** 2)
+        loop = n * self.lane_spacing
         fwd = ((ob["index"] - ei) % n) * self.lane_spacing
-        return fwd, n * self.lane_spacing - fwd
+        if fwd > loop / 2.0:
+            fwd -= loop            # negative = obstacle behind / overlapped
+        return fwd, loop - fwd if fwd >= 0 else -fwd
 
     def run_episode(self, group, variant):
         sp = group["start"]
@@ -939,9 +953,14 @@ class Collector(Node):
             if avoid_phase in ("approach", "stopping", "waiting") and \
                     ob.get("present"):
                 fwd_g, _ = self._ob_arc_gap(ob)
-                if fwd_g is not None and 0.0 < fwd_g < 4.8:
-                    termination, detail = "collision", (
-                        f"head-on arc gap {fwd_g:.2f} m < 4.8 (body extents)")
+                if fwd_g is not None and -4.8 < fwd_g < 6.0:
+                    # < 4.8 m center = body contact; 4.8-6.0 = stopped too
+                    # short of the demonstrated line. Both are corpus
+                    # poison (r10 audit: 7/16 v1 demos taught contact), so
+                    # both terminate and never pack as success.
+                    kind = "collision" if fwd_g < 4.8 else "stop_short"
+                    termination, detail = kind, (
+                        f"head-on arc gap {fwd_g:.2f} m (guard 6.0)")
                     break
             if avoid_phase in ("approach", "stopping", "waiting", "passing"):
                 fwd, behind = self._ob_arc_gap(ob)
@@ -1156,6 +1175,9 @@ def main():
                         "cruise sentence, 3 variants — no obstacle / parked "
                         "car in our lane (scripted oracle lane-change) / "
                         "parked car in the other lane (hold lane)")
+    p.add_argument("--obstacle-v1-only", action="store_true",
+                   help="obstacle groups emit only the avoidance variant "
+                        "(v1) — repair collection after the stop audit")
     p.add_argument("--cruise-groups", type=int, default=0,
                    help="lane-pair groups with no endpoint in the sentence; "
                         "the episode ends by duration while still cruising")

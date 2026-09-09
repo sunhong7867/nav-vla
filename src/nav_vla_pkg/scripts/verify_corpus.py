@@ -224,7 +224,13 @@ def check_episode(ep_dir):
                    {label: [r.get("t", 0.0) for r in rows]})
         for sname, ts in streams.items():
             if not ts:
-                fail.append(f"{name}: {sname} is empty")
+                if sname == "poses[cli]":
+                    # the CLI stream is optional since use_cli_pose_stream
+                    # (2026-09-09: its resident `gz topic -e` ruby starved
+                    # gz's publishers); the tf stream is the label source
+                    note.append(f"{name}: cli pose stream off (ok)")
+                else:
+                    fail.append(f"{name}: {sname} is empty")
                 continue
             if max(ts) <= 0.0:
                 fail.append(f"{name}: every {sname} timestamp is 0 — /clock stopped")
@@ -457,7 +463,13 @@ def main():
         print(f"  floor: no same-request pairs collected — falling back to the "
               f"G1 constant {G1_FLOOR_M * 100:.1f} cm. Use --floor-groups.")
 
-    cf_ok = bool(pairs)
+    # Repair collections (e.g. --obstacle-v1-only) have one variant per
+    # group BY DESIGN — no pairs can exist, and that is not a defect the
+    # session should fail on (2026-09-09: the v9 fix batch was unpackable).
+    singleton_session = all(len(m) < 2 for m in groups.values())         if groups else False
+    cf_ok = bool(pairs) or singleton_session
+    if singleton_session:
+        print("  single-variant session (repair batch) — pair gate waived")
     if pairs:
         # Report per axis. Ordinal and speed pairs are different claims measured
         # on different quantities: an ordinal pair must move D_shape, a speed pair
