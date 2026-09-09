@@ -396,6 +396,16 @@ class VlaBridge(Node):
         # with --reasoning-every). Empty topic when the server sends none.
         self.reasoning_pub = self.create_publisher(String, "/vla/reasoning", 5)
         self._last_reasoning_req = -1
+        # /vla/hold: external supervisor's stop gate (see _control)
+        self._hold = False
+        self.create_subscription(String, "/vla/hold", self._hold_cb, 5)
+        # /vla/speed_floor: supervisor-set minimum speed (m/s, 0=off) —
+        # same serving-layer speed-shaping family as curv_boost. Steering
+        # stays the policy's; this only stops a pass from stalling when
+        # the policy's learned stop-near-car reflex fires mid-overtake.
+        self._floor = 0.0
+        self.create_subscription(String, "/vla/speed_floor",
+                                 self._floor_cb, 5)
 
         self.create_timer(1.0 / self.rate_hz, self._control,
                           callback_group=control_cg)
@@ -489,6 +499,21 @@ class VlaBridge(Node):
         b = (b + math.pi) % (2 * math.pi) - math.pi
         return [b, math.hypot(dx, dy)]
 
+    def _floor_cb(self, msg):
+        try:
+            self._floor = max(0.0, float(msg.data))
+        except ValueError:
+            self._floor = 0.0
+
+    def _hold_cb(self, msg):
+        want = msg.data.strip().lower() in ("1", "true", "on", "hold")
+        if want != self._hold:
+            self._hold = want
+            self.get_logger().info(f"hold -> {'ON' if want else 'off'}")
+            if not want:
+                # stale pre-hold predictions would lurch the car; refill fresh
+                self.queue.clear()
+
     def _instr_cb(self, msg):
         text = msg.data.strip()
         with self._task_lock:
@@ -522,6 +547,15 @@ class VlaBridge(Node):
         if not task:
             if self._last_cmd != (0.0, 0.0):
                 self._publish(0.0, 0.0)
+            return
+
+        # Supervisor hold (/vla/hold): a discrete safety decision made by
+        # CODE, not the policy — zero the COMMAND only. Inference keeps
+        # running (the instruction stays set), so the reasoning narration
+        # continues and the standstill state channel counts up: the policy
+        # narrates its own enforced stop ("Stopped ..., watching").
+        if self._hold:
+            self._publish(0.0, 0.0, override="hold")
             return
 
         a = self.queue.pop()
@@ -730,6 +764,9 @@ class VlaBridge(Node):
         return 2.0 * math.sin(alpha) / dist
 
     def _publish(self, v, w, override="none"):
+        if self._floor > 0.0 and not self._hold and override != "hold" \
+                and v < self._floor:
+            v, override = self._floor, "floor"
         t = Twist()
         t.linear.x = float(v)
         t.angular.z = float(w)
