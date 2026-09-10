@@ -102,6 +102,22 @@ class AvoidSupervisor(Node):
                 best = (d, x, y)
         if best and best[0] < 3.0:
             self.pose = (best[1], best[2])
+        elif best and self.pose is not None and best[0] > 5.0:
+            # nearest entity jumped >5 m from the last fix: the demo
+            # teleported the ego back to start — begin a fresh take
+            seed = (self.args.seed_x, self.args.seed_y)
+            near_seed = min(math.hypot(t.transform.translation.x - seed[0],
+                                       t.transform.translation.y - seed[1])
+                            for t in msg.transforms)
+            if near_seed < 3.0:
+                self.pose = None
+                self.phase = "approach"
+                self.ob_locked = None
+                self._still_t = self._prev = None
+                self._floor_on = False
+                self._hold(False)
+                self.floor_pub.publish(String(data="0"))
+                self.get_logger().info("take reset — ego back at start")
 
     def _instr_cb(self, msg):
         t = msg.data.strip()
@@ -176,24 +192,18 @@ class AvoidSupervisor(Node):
                                          self.pose[1] - self._prev[1]) < 0.03:
                 self._still_t = self._still_t or now
             if self._still_t and now - self._still_t >= self.args.watch_s:
+                self.orig_task = self.task
                 other = "lane1" if lane == "lane2" else "lane2"
                 sent = (f"Cruise in the {LANE_SENT[other]} lane, "
                         "at a normal speed.")
                 self.task = sent
                 self.instr_pub.publish(String(data=sent))
                 self._hold(False)
+                self.floor_pub.publish(String(data=str(self.args.pass_floor)))
                 self.phase = "pass"
-                self._floor_on = False
                 self.get_logger().info(
                     f"GO — watched {self.args.watch_s:.1f}s, passing via "
                     f"{other}")
-        elif self.phase == "pass" and not getattr(self, "_floor_on", False) \
-                and self._lane_of(*self.pose) != ob["lane"]:
-            # crossed onto the passing lane: now floor the speed so the
-            # stop-near-car reflex cannot stall the overtake
-            self.floor_pub.publish(String(data=str(self.args.pass_floor)))
-            self._floor_on = True
-            self.get_logger().info("crossed — pass floor on")
         elif self.phase == "pass" and 0.0 < fwd < 6.5 and \
                 self._lane_of(*self.pose) == ob["lane"]:
             # head-on only: once the ego is on the other lane, a small fwd
@@ -201,29 +211,44 @@ class AvoidSupervisor(Node):
             # safety net: still closing head-on on the blocked lane —
             # re-assert the hold rather than let the pass become a contact
             self._hold(True)
+            self.floor_pub.publish(String(data="0"))
             self.phase, self._still_t = "hold", None
             self.get_logger().warn(
                 f"re-HOLD — pass not clearing, car {fwd:.1f} m ahead")
         elif self.phase == "pass" and fwd < 0 and -fwd >= self.args.clear_m:
             self.phase = "done"
             self.floor_pub.publish(String(data="0"))
-            self.get_logger().info("cleared — pass complete")
+            # the car is behind and out of view: return to the original
+            # lane, exactly as the user drives — pass, then merge back
+            if getattr(self, "orig_task", ""):
+                self.task = self.orig_task
+                self.instr_pub.publish(String(data=self.orig_task))
+            self.get_logger().info("cleared — returning to original lane")
         self._prev = self.pose
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--hold-at", type=float, default=14.0,
+    ap.add_argument("--preset", choices=["pass", "watch"], default="pass",
+                    help="pass: hold 16 m — full stop/watch/overtake/return "
+                         "(r11 needs ~16 m of runway to cross). watch: hold "
+                         "11 m — close-up stop where the policy's watching "
+                         "narration fires (its training distribution is a "
+                         "NEAR car), no overtake; safe standing hold.")
+    ap.add_argument("--hold-at", type=float, default=16.0,
                     help="arc distance (m, center) to assert the hold")
-    ap.add_argument("--watch-s", type=float, default=2.5)
+    ap.add_argument("--watch-s", type=float, default=4.0)
     ap.add_argument("--clear-m", type=float, default=6.0)
-    ap.add_argument("--pass-floor", type=float, default=1.2,
+    ap.add_argument("--pass-floor", type=float, default=1.0,
                     help="min speed (m/s) enforced during the pass so the "
                         "policy's stop-near-car reflex cannot stall it")
     ap.add_argument("--seed-x", type=float, required=True,
                     help="ego start x (proximity-tracking seed)")
     ap.add_argument("--seed-y", type=float, required=True)
     args = ap.parse_args()
+    if args.preset == "watch":
+        args.hold_at = min(args.hold_at, 5.6)
+        args.watch_s = 1e9          # never GO — the point is the close watch
     rclpy.init()
     node = AvoidSupervisor(args)
     try:
