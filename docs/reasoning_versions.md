@@ -88,8 +88,11 @@ paraphrase_reasoning.py 변형). 속도는 티어만 인용(70/110/150), 거리�
 | **r8** | **v9r4** | 티어 | + standstill_s 채널 | **언어 절반 성공**: greedy에서 phase 문장 등장(7/28), v=0 프레임이 "Stopped/has not moved" 발화 — 채널이 phase를 결속. 언급률 100→79, 숫자 garble 잔존. **라이브: 액션 GO 여전히 미개시**(3.6m 정지 유지) — GO 전이 프레임 희소 + still=5 캡 구간 외삽이 유력 | 보존 |
 
 † r1의 speed 69%는 코퍼스가 거의 1.4 m/s라 부풀려진 수치.
-\* 체크포인트는 평가 후 중간본 즉시 삭제, `checkpoints/last`만 보존
-(디스크 98% 상시 — v8h_server_watch.sh 관례).
+\* 체크포인트는 평가 후 중간본 즉시 삭제, `checkpoints/last`만 보존.
+**2026-09-10 대이관**: 서버에는 `navvla_smolvla_v3y`(재학습 베이스)와
+`navvla_reasoning_r11`(현역)만 남기고 나머지 24개 런 전부를 랩탑
+`~/nav-vla-model-archive/runs/`로 이관(체크섬 검증 완료, 서버 17→57 G).
+과거 런이 필요하면 아카이브에서 서버로 되올릴 것.
 
 ## 4. 서빙 요건 (체크포인트 ↔ 브리지/서버 궁합)
 
