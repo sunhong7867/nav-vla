@@ -206,7 +206,17 @@ class EpisodeRecorder(Node):
         self._claim_session()
 
         self.gz_bin = resolve_gz_bin(self.declare_parameter("gz_bin", "").value)
-        self.stream = WorldPoseStream(self.gz_bin, self.model_name).start()
+        # The CLI pose stream is a resident `gz topic -e` (ruby) that parses
+        # the FULL dynamic_pose text dump. With the v9 obstacle fleet resident
+        # the dump is ~5x bigger and the ruby burns a whole core (96%
+        # measured 2026-09-09), starving gz's own publishers — the likely
+        # root of the tf gaps that rejected half of every v9 batch. The tf
+        # bridge stream is the primary source; collections can turn this
+        # fallback off entirely.
+        self.use_cli_pose = bool(self.declare_parameter(
+            "use_cli_pose_stream", True).value)
+        self.stream = (WorldPoseStream(self.gz_bin, self.model_name).start()
+                       if self.use_cli_pose else None)
 
         sensor_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -423,6 +433,26 @@ class EpisodeRecorder(Node):
         if self._last_tf_xy is not None:
             dx = math.hypot(x - self._last_tf_xy[0], y - self._last_tf_xy[1])
             if dx > self.tf_jump_tol:
+                # The array order shifts whenever another dynamic entity
+                # (e.g. the v9 obstacle fleet) joins or leaves the moving
+                # set — the ego did not jump, our INDEX now points at a
+                # different car. Before re-identifying (gz CLI, seconds of
+                # dark stream — 66/120 episodes lost on 2026-09-07), try to
+                # find the ego by proximity: the entity nearest to its last
+                # known position, within the physical motion bound.
+                best_i, best_d = None, self.tf_jump_tol
+                for i, t2 in enumerate(tfs):
+                    d2 = math.hypot(
+                        t2.transform.translation.x - self._last_tf_xy[0],
+                        t2.transform.translation.y - self._last_tf_xy[1])
+                    if d2 < best_d:
+                        best_i, best_d = i, d2
+                if best_i is not None:
+                    self._ego_idx = idx = best_i
+                    tr = tfs[idx].transform
+                    x, y = tr.translation.x, tr.translation.y
+                    dx = best_d
+            if dx > self.tf_jump_tol:
                 # Either the entity order shifted or the car was teleported.
                 # Re-identify rather than silently log another entity's pose.
                 #
@@ -450,7 +480,14 @@ class EpisodeRecorder(Node):
             ep = self._ep
         if ep is None:
             return
-        ep["poses"].write({"t": self._now(), "seq": self._tf_seq,
+        # Prefer the bridge's own header stamp (gz sim time, microsecond
+        # precision) over the node clock: /clock is throttled to 100 Hz and
+        # quantizes node-clock stamps to 10 ms, which put p50 5.5 cm of
+        # interpolation error into the action labels (v9 pilot, 2026-09-04).
+        hs = tfs[idx].header.stamp
+        t_hdr = hs.sec + hs.nanosec * 1e-9
+        ep["poses"].write({"t": t_hdr if t_hdr > 0.0 else self._now(),
+                           "seq": self._tf_seq,
                            "x": x, "y": y, "yaw": yaw, "src": "tf"})
 
     def _identify_ego(self, timeout_s=3.0):
@@ -532,11 +569,11 @@ class EpisodeRecorder(Node):
             time.sleep(period)
             if not self._rec:
                 continue
-            seq = self.stream.seq
+            seq = self.stream.seq if self.stream else -1
             if seq == last_seq:
                 continue
             last_seq = seq
-            pose = self.stream.latest
+            pose = self.stream.latest if self.stream else None
             if pose is None:
                 continue
             with self._lock:
@@ -620,7 +657,12 @@ class EpisodeRecorder(Node):
         if self._ego_idx is None:
             self._identify_ego()
 
-        pose = self.stream.latest
+        pose = self.stream.latest if self.stream else None
+        if pose is None:
+            # CLI stream disabled (use_cli_pose_stream:=false): one-shot
+            # `gz model -p` per episode start is cheap (~150 ms) and only
+            # the start_pose needs it — the per-frame streams are tf-based.
+            pose = query_world_pose(self.gz_bin, self.model_name)
         if pose is None:
             self._status("error", detail="no pose yet — is the sim running?")
             return
@@ -791,7 +833,8 @@ class EpisodeRecorder(Node):
             self.stop_episode("operator_abort")
         self._run_writer = False
         try:
-            self.stream.stop()
+            if self.stream:
+                self.stream.stop()
         except Exception:
             pass
         super().destroy_node()

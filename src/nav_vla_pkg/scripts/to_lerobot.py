@@ -37,6 +37,7 @@ Usage (on a machine with lerobot)::
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -119,6 +120,26 @@ def main():
                         "of 'at the bay, speed zero -> stay at zero'. This is "
                         "data, not a rule in the control path, so criterion (d) "
                         "is untouched. 0 disables.")
+    p.add_argument("--goal-zones", default="",
+                   help="path to track_paths.json. Enables goal conditioning: "
+                        "observation.state grows to 5 dims with "
+                        "[goal_bearing_rad, goal_dist_m] appended. Bearing is "
+                        "relative to the MOTION heading (row 'heading' field, "
+                        "i.e. raw yaw + the calibrated -90 deg offset), the "
+                        "same frame the ego SE(2) actions use. Episodes whose "
+                        "instruction names a zone (direct_zone, ring_goal) get "
+                        "real values; cruise/cw episodes get (0, 0) so the "
+                        "channel reads 'no goal'. Serving must feed the same "
+                        "two numbers or the checkpoint is unusable.")
+    p.add_argument("--standstill-cap", type=float, default=5.0,
+                   help="cap for standstill_s; keep <= the demonstrations' "
+                        "longest watch so serving never extrapolates "
+                        "(r8 lesson: live cap-5 sat outside the 0.4-3.5 s "
+                        "training range)")
+    p.add_argument("--standstill-state", action="store_true",
+                   help="append standstill_s (seconds at rest, cap 5) to "
+                        "observation.state — the v9 watch-then-avoid GO "
+                        "trigger, unobservable from image+[v,w,steer]")
     p.add_argument("--no-videos", action="store_true",
                    help="store frames as images instead of encoded video")
     p.add_argument("--video-backend", default="pyav",
@@ -142,6 +163,59 @@ def main():
     if not eps:
         print(f"no packaged episodes in {packed}", file=sys.stderr)
         return 1
+
+    goal_dims = 0
+    if args.goal_zones:
+        goal_dims = 2
+        zones = {name: tuple(z["pose"][:2]) for name, z in
+                 json.load(open(args.goal_zones, encoding="utf-8"))
+                 ["zones"].items()}
+        n_goal, n_free = 0, 0
+        for _name, _base, meta, rows, _d in eps:
+            goal = None
+            # direct_zone ONLY. ring_goal (follow the lane to a zone) had goal
+            # labels in v8g and taught the opposite mapping — bearing points
+            # sideways/backwards while the car lane-follows — diluting the 41
+            # direct episodes' "steer toward bearing" signal (docs/ver/
+            # 20260824_1138). ring_goal now reads (0, 0): zone words without a
+            # vector mean "not a beeline".
+            if meta.get("intent_id") in ("direct_zone",):
+                goal = (meta.get("intent_slots") or {}).get("goal")
+            if goal is not None:
+                if goal not in zones:
+                    print(f"unknown zone '{goal}' in {_name} — not in "
+                          f"{args.goal_zones}", file=sys.stderr)
+                    return 1
+                gx, gy = zones[goal]
+                for r in rows:
+                    dx, dy = gx - r["x"], gy - r["y"]
+                    b = math.atan2(dy, dx) - r["heading"]
+                    b = (b + math.pi) % (2 * math.pi) - math.pi
+                    r["state"] = list(r["state"]) + [b, math.hypot(dx, dy)]
+                n_goal += 1
+            else:
+                for r in rows:
+                    r["state"] = list(r["state"]) + [0.0, 0.0]
+                n_free += 1
+        print(f"goal conditioning: {n_goal} episodes with a zone goal, "
+              f"{n_free} with (0, 0)")
+    still_dims = 0
+    if args.standstill_state:
+        # standstill_s: seconds the ego has been at rest (capped). The v9
+        # demonstrations' GO trigger (pass after a 2.5 s watch) and the
+        # "watching" narration are both functions of THIS quantity, and it
+        # is invisible in image+`[v, w, steer]` — the r6 live demo stopped
+        # behind the parked car forever (docs/ver/20260907_2123).
+        still_dims = 1
+        for _name, _base, _meta, rows, _d in eps:
+            still = 0.0
+            for r in rows:
+                v = (r["state"] or [9.9])[0]
+                still = (min(args.standstill_cap, still + 1.0 / args.fps)
+                         if v < 0.15 else 0.0)
+                r["state"] = list(r["state"]) + [still]
+        print(f"standstill-state channel appended "
+              f"(cap {args.standstill_cap} s)")
     total_rows = sum(len(r) for _, _, _, r, _ in eps)
     total_dropped = sum(d for *_, d in eps)
     print(f"{len(eps)} episodes, {total_rows} frames at {args.fps} Hz")
@@ -171,9 +245,12 @@ def main():
     features = {
         CAM_KEY: {"dtype": "video" if not args.no_videos else "image",
                   "shape": (h, w, c), "names": ["height", "width", "channels"]},
-        "observation.state": {"dtype": "float32", "shape": (3,),
-                              "names": ["speed_mps", "yaw_rate_radps",
-                                        "steer_rad"]},
+        "observation.state": {
+            "dtype": "float32", "shape": (3 + goal_dims + still_dims,),
+            "names": (["speed_mps", "yaw_rate_radps", "steer_rad"] +
+                      (["goal_bearing_rad", "goal_dist_m"] if goal_dims
+                       else []) +
+                      (["standstill_s"] if still_dims else []))},
         "action": {"dtype": "float32", "shape": (3,),
                    "names": ["dx_m", "dy_m", "dyaw_rad"]},
     }
@@ -196,8 +273,12 @@ def main():
         # speed, the exact inverse of the creep bug the padding exists to fix.
         if args.hold_frames > 0 and rows and rows[-1]["state"][0] < 0.3:
             last = rows[-1]
+            # Goal channels (if any) keep their arrival values through the
+            # hold: "at the goal, stay stopped" — zeroing them would flip the
+            # state to "no goal" exactly at the moment the stop must hold.
+            hold_state = [0.0, 0.0, 0.0] + list(last["state"][3:])
             hold = [{"frame": last["frame"],
-                     "state": [0.0, 0.0, 0.0],
+                     "state": hold_state,
                      "action": [0.0, 0.0, 0.0]}] * args.hold_frames
         for r in rows + hold:
             img_p = os.path.join(base, r["frame"])

@@ -148,6 +148,7 @@ def generate_launch_description():
     use_driver = LaunchConfiguration("use_driver")
     use_policy = LaunchConfiguration("use_policy")
     use_camera = LaunchConfiguration("use_camera")
+    use_vla_camera = LaunchConfiguration("use_vla_camera")
     use_lane_mode_gui = LaunchConfiguration("use_lane_mode_gui")
     use_debug_visualizers = LaunchConfiguration("use_debug_visualizers")
     use_rviz = LaunchConfiguration("use_rviz")
@@ -155,8 +156,14 @@ def generate_launch_description():
     use_top_down_view = LaunchConfiguration("use_top_down_view")
     use_track_overview_view = LaunchConfiguration("use_track_overview_view")
     use_lane_tuning_gui = LaunchConfiguration("use_lane_tuning_gui")
+    # 100 Hz (10 ms sim-time resolution) is enough for demos and keeps the
+    # laptop's executors quiet, but it quantizes the recorder's pose stamps:
+    # the v9 pilot measured p50 5.5 cm of interpolation error in the action
+    # labels (gate: 2 cm). Corpus collection passes clock_hz:=500.
+    clock_hz = LaunchConfiguration("clock_hz")
 
     return LaunchDescription([
+        DeclareLaunchArgument("clock_hz", default_value="100.0"),
         *_rendering_environment_actions(),
         DeclareLaunchArgument(
             "use_perception_pipeline",
@@ -180,6 +187,12 @@ def generate_launch_description():
             default_value="true",
             description="Bridge the front camera to /camera/image_raw (needed for data collection "
                         "even when the perception pipeline is off).",
+        ),
+        DeclareLaunchArgument(
+            "use_vla_camera",
+            default_value="true",
+            description="Also bridge the wide VLA camera to /vla_camera/image_raw. "
+                        "Set false in YOLO-only sessions to skip rendering the unused lens.",
         ),
         DeclareLaunchArgument(
             "use_lane_mode_gui",
@@ -276,12 +289,28 @@ def generate_launch_description():
         # so the whole stream came out as t=0.0 and the offline join was impossible.
         # Image stamps were unaffected (they carry the simulator's own header),
         # which is exactly what made the failure look like a partial success.
+        # Unique node names on every parameter_bridge: four instances all named
+        # /ros_gz_bridge trip the duplicate-name warning and leave rqt_graph's
+        # canvas blank (its dotcode generator keys nodes by name).
+        # The gz world steps at 1 kHz and the bridge forwards every step —
+        # /clock at ~940 Hz wakes every use_sim_time executor per message
+        # (measured 2026-08-28, a leg of the desktop-freeze incident). The
+        # bridge therefore lands on /clock_raw and clock_throttle_node
+        # republishes /clock at a bounded 100 Hz.
         Node(
             package="ros_gz_bridge",
             executable="parameter_bridge",
+            name="gz_bridge_clock",
             arguments=[
                 "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
+                "--ros-args", "-r", "/clock:=/clock_raw",
             ],
+            output="screen",
+        ),
+        Node(
+            package="simulation_pkg",
+            executable="clock_throttle_node",
+            parameters=[{"rate_hz": clock_hz}],
             output="screen",
         ),
         # Ground-truth pose of every moving entity, native and stamped by DDS
@@ -293,6 +322,7 @@ def generate_launch_description():
         Node(
             package="ros_gz_bridge",
             executable="parameter_bridge",
+            name="gz_bridge_pose",
             arguments=[
                 "/world/default/dynamic_pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V",
             ],
@@ -301,6 +331,7 @@ def generate_launch_description():
         Node(
             package="ros_gz_bridge",
             executable="parameter_bridge",
+            name="gz_bridge_control",
             arguments=[
                 "/model/ego_vehicle/odometry@nav_msgs/msg/Odometry@gz.msgs.Odometry",
                 "/model/ego_vehicle/cmd_vel@geometry_msgs/msg/Twist@gz.msgs.Twist",
@@ -318,19 +349,38 @@ def generate_launch_description():
             executable="ackermann_cmd_adapter_node",
             output="screen",
         ),
+        # Front (narrow) camera bridge. Split from the wide VLA camera so a
+        # YOLO-only session can skip the unused wide lens: a bridged gz camera
+        # is a subscribed gz camera, and a subscribed camera gets rendered —
+        # dropping it saves real GPU work, not just a graph node.
         Node(
             condition=IfCondition(use_camera),
             package="ros_gz_bridge",
             executable="parameter_bridge",
+            name="gz_bridge_cameras",
             arguments=[
                 "/camera@sensor_msgs/msg/Image@gz.msgs.Image",
-                # Wide lens used for VLA recording. Bridged alongside rather than
-                # instead of /camera: the YOLO pipeline is calibrated to the
-                # narrow view and both are needed in the same session.
-                "/vla_camera@sensor_msgs/msg/Image@gz.msgs.Image",
             ],
             remappings=[
                 ("/camera", "/camera/image_raw"),
+            ],
+            output="screen",
+        ),
+        Node(
+            condition=IfCondition(PythonExpression([
+                "'", use_camera, "' == 'true' and '",
+                use_vla_camera, "' == 'true'",
+            ])),
+            package="ros_gz_bridge",
+            executable="parameter_bridge",
+            name="gz_bridge_vla_camera",
+            arguments=[
+                # Wide lens used for VLA recording. Bridged alongside rather than
+                # instead of /camera: the YOLO pipeline is calibrated to the
+                # narrow view; sessions that need both keep both.
+                "/vla_camera@sensor_msgs/msg/Image@gz.msgs.Image",
+            ],
+            remappings=[
                 ("/vla_camera", "/vla_camera/image_raw"),
             ],
             output="screen",
@@ -339,6 +389,7 @@ def generate_launch_description():
             condition=IfCondition(use_top_down_view),
             package="ros_gz_bridge",
             executable="parameter_bridge",
+            name="gz_bridge_top_camera",
             arguments=[
                 "/ego_top_camera@sensor_msgs/msg/Image@gz.msgs.Image",
             ],
@@ -351,6 +402,7 @@ def generate_launch_description():
             condition=IfCondition(use_track_overview_view),
             package="ros_gz_bridge",
             executable="parameter_bridge",
+            name="gz_bridge_overview_camera",
             arguments=[
                 "/top_camera@sensor_msgs/msg/Image@gz.msgs.Image",
             ],

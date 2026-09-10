@@ -73,3 +73,4 @@ Thumbs.db
 /tools/lidar_alignment_gui/output/images/*.png
 models/
 eval_out/
+src/nav_vla_pkg/data_v9/
